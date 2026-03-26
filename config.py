@@ -13,7 +13,7 @@ PORT = int(os.getenv("PORT", "8080"))
 
 SOFASCORE_BASE = "https://api.sofascore.com/api/v1"
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"

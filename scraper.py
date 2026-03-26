@@ -2,8 +2,8 @@ import asyncio
 import random
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from curl_cffi.requests import AsyncSession
 from config import SOFASCORE_BASE
@@ -70,9 +70,9 @@ class UpcomingMatch:
 
 
 class SofascoreScraper:
-    def __init__(self, max_concurrent: int = 4):
+    def __init__(self):
         self._session: AsyncSession | None = None
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._rate_lock = asyncio.Lock()
         self._last_request_time = 0.0
         self._impersonate = "chrome"
 
@@ -91,38 +91,42 @@ class SofascoreScraper:
         return self._session
 
     async def _fetch_json(self, url: str, retries: int = 3) -> dict | None:
-        async with self._semaphore:
-            # Enforce minimum delay between requests
-            elapsed = time.monotonic() - self._last_request_time
-            min_delay = random.uniform(1.2, 2.8)
-            if elapsed < min_delay:
-                await asyncio.sleep(min_delay - elapsed)
-
-            session = await self._get_session()
-            for attempt in range(retries):
-                try:
+        for attempt in range(retries):
+            try:
+                async with self._rate_lock:
+                    # Enforce minimum delay between requests
+                    elapsed = time.monotonic() - self._last_request_time
+                    min_delay = random.uniform(1.2, 2.8)
+                    if elapsed < min_delay:
+                        await asyncio.sleep(min_delay - elapsed)
+                    session = await self._get_session()
                     self._last_request_time = time.monotonic()
                     resp = await session.get(url)
-                    if resp.status_code == 200:
-                        return resp.json()
-                    elif resp.status_code == 429:
-                        wait = (2 ** attempt) * 5 + random.uniform(1, 3)
-                        logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
-                        await asyncio.sleep(wait)
-                    elif resp.status_code == 403:
-                        wait = (2 ** attempt) * 3 + random.uniform(1, 2)
-                        logger.warning(f"Forbidden (403) on {url}, attempt {attempt+1}")
-                        # Rotate impersonation target
-                        await self._rotate_session()
-                        session = await self._get_session()
-                        await asyncio.sleep(wait)
-                    else:
-                        logger.warning(f"HTTP {resp.status_code} on {url}")
-                        return None
-                except Exception as e:
-                    logger.warning(f"Request error on {url}: {e}")
-                    await asyncio.sleep(2 * (attempt + 1))
-            return None
+            except Exception as e:
+                logger.warning(f"Request error on {url}: {e}")
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 429:
+                wait = (2 ** attempt) * 5 + random.uniform(1, 3)
+                logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
+                await asyncio.sleep(wait)
+            elif resp.status_code == 403:
+                wait = (2 ** attempt) * 3 + random.uniform(1, 2)
+                logger.warning(f"Forbidden (403) on {url}, attempt {attempt+1}")
+                async with self._rate_lock:
+                    await self._rotate_session()
+                await asyncio.sleep(wait)
+            elif resp.status_code >= 500:
+                wait = (2 ** attempt) * 2 + random.uniform(1, 2)
+                logger.warning(f"Server error ({resp.status_code}) on {url}, retrying in {wait:.1f}s")
+                await asyncio.sleep(wait)
+            else:
+                logger.warning(f"HTTP {resp.status_code} on {url}")
+                return None
+        return None
 
     async def _rotate_session(self):
         """Close current session and create a new one with different impersonation."""
@@ -132,32 +136,35 @@ class SofascoreScraper:
         self._impersonate = random.choice(IMPERSONATE_TARGETS)
 
     def _parse_minute(self, event: dict) -> int:
-        """Extract current match minute from event data."""
-        # Try statusTime.played first (seconds)
-        status_time = event.get("statusTime", {})
-        if status_time and status_time.get("played"):
-            return status_time["played"] // 60
+        """Extract current match minute from event data.
 
-        # Try time.currentPeriodStart
+        SofaScore provides:
+          statusTime.initial  – elapsed seconds at period start (0 for 1st half, 2700 for 2nd)
+          statusTime.timestamp – UNIX timestamp when the current period clock started
+        Formula: minute = (initial + (now - timestamp)) / 60
+        """
+        now = int(time.time())
+
+        # Primary: use statusTime.initial + elapsed since timestamp
+        status_time = event.get("statusTime", {})
+        ts = status_time.get("timestamp")
+        if ts and ts > 0:
+            initial = status_time.get("initial", 0)
+            elapsed = now - ts
+            minute = (initial + max(elapsed, 0)) // 60
+            return max(0, min(int(minute), 130))
+
+        # Fallback: time.currentPeriodStartTimestamp
         time_data = event.get("time", {})
         if time_data:
             period_start = time_data.get("currentPeriodStartTimestamp")
-            if period_start:
-                now = int(datetime.utcnow().timestamp())
-                elapsed = (now - period_start) // 60
-                # Second half adds 45 minutes
-                status = event.get("status", {})
-                code = status.get("code", 0)
-                if code == 7:  # 2nd half
-                    elapsed += 45
-                return max(0, min(elapsed, 120))
+            if period_start and period_start > 0:
+                initial = time_data.get("initial", 0)
+                elapsed = now - period_start
+                minute = (initial + max(elapsed, 0)) // 60
+                return max(0, min(int(minute), 130))
 
-            # Try time.played directly
-            played = time_data.get("played")
-            if played is not None:
-                return played // 60 if played > 90 else played
-
-        # Try status description fallback (e.g. "45+2")
+        # Fallback: status description (e.g. "1st half", "2nd half")
         status = event.get("status", {})
         desc = status.get("description", "")
         if desc and desc[0].isdigit():
@@ -166,13 +173,11 @@ class SofascoreScraper:
             except (ValueError, IndexError):
                 pass
 
-        # Fallback: check lastPeriod start
-        changes = event.get("changes", {})
-        if changes:
-            change_ts = changes.get("changeTimestamp")
-            if change_ts:
-                elapsed_s = int(datetime.utcnow().timestamp()) - change_ts
-                return max(0, elapsed_s // 60)
+        # Last resort: estimate from startTimestamp
+        start_ts = event.get("startTimestamp", 0)
+        if start_ts and start_ts > 0:
+            elapsed_min = (now - start_ts) // 60
+            return max(0, min(int(elapsed_min), 130))
 
         return 0
 
@@ -305,7 +310,7 @@ class SofascoreScraper:
 
     async def get_upcoming_matches(self) -> list[UpcomingMatch]:
         """Fetch today's upcoming (scheduled) football matches."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         data = await self._fetch_json(
             f"{SOFASCORE_BASE}/sport/football/scheduled-events/{today}"
         )
@@ -332,7 +337,7 @@ class SofascoreScraper:
                 full_league = f"{country} - {league_name}" if country else league_name
 
                 start_ts = event.get("startTimestamp", 0)
-                start_time = datetime.utcfromtimestamp(start_ts).strftime("%H:%M") if start_ts else "TBD"
+                start_time = str(start_ts) if start_ts else "0"
 
                 round_info_data = event.get("roundInfo", {})
                 round_str = ""
@@ -360,4 +365,4 @@ class SofascoreScraper:
 
 
 # Singleton scraper instance
-scraper = SofascoreScraper(max_concurrent=4)
+scraper = SofascoreScraper()

@@ -159,6 +159,15 @@ body {
 .row-btn.follow { color: var(--green); border-color: var(--green); }
 .row-btn.follow:hover { background: rgba(63,185,80,0.15); }
 
+/* Active (toggled on) state for action buttons */
+.row-btn.active {
+    font-weight: 700;
+    box-shadow: 0 0 0 1px currentColor;
+}
+.row-btn.bet.active { background: rgba(209,134,22,0.25); }
+.row-btn.ignore.active { background: rgba(72,79,88,0.3); }
+.row-btn.follow.active { background: rgba(63,185,80,0.25); }
+
 /* ===== INPUTS ===== */
 .input-select {
     padding: 6px 10px;
@@ -167,6 +176,18 @@ body {
     background: var(--bg-surface);
     color: var(--text-primary);
     font-size: 0.82rem;
+}
+.input-search {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 0.82rem;
+    min-width: 180px;
+}
+.input-search::placeholder {
+    color: var(--text-muted);
 }
 
 /* ===== TABLE ===== */
@@ -194,6 +215,29 @@ th {
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+}
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color var(--transition);
+}
+th.sortable:hover {
+    color: var(--accent);
+}
+th.sortable::after {
+    content: " ⇅";
+    font-size: 0.7rem;
+    opacity: 0.4;
+}
+th.sortable.sort-asc::after {
+    content: " ↑";
+    opacity: 1;
+    color: var(--accent);
+}
+th.sortable.sort-desc::after {
+    content: " ↓";
+    opacity: 1;
+    color: var(--accent);
 }
 td {
     padding: 10px 12px;
@@ -228,6 +272,29 @@ tr.state-following {
     border-left: 3px solid var(--green);
 }
 
+/* ===== ANOMALY ROW HIGHLIGHT ===== */
+tr.anomaly-row {
+    background: rgba(248,81,73,0.08) !important;
+    border-left: 3px solid var(--danger);
+    animation: anomaly-pulse 2s ease-in-out 3;
+}
+@keyframes anomaly-pulse {
+    0%, 100% { background: rgba(248,81,73,0.08); }
+    50% { background: rgba(248,81,73,0.18); }
+}
+tr.anomaly-row:hover {
+    background: rgba(248,81,73,0.15) !important;
+}
+.badge-anomaly {
+    background: rgba(248,81,73,0.2);
+    color: var(--danger);
+    font-weight: 700;
+}
+.upcoming-status-label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
 /* ===== CONDITION BADGES ===== */
 .badge {
     display: inline-block;
@@ -238,6 +305,8 @@ tr.state-following {
 }
 .badge-a { background: rgba(248,81,73,0.15); color: var(--danger); }
 .badge-b { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.badge-alert { background: rgba(88,166,255,0.12); color: var(--text-secondary); font-size: 0.7rem; }
+.badge-alert-multi { background: rgba(88,166,255,0.2); color: var(--accent); font-weight: 700; }
 
 /* ===== RULES LIST ===== */
 .rules-list {

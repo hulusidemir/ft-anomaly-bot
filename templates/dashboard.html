@@ -21,6 +21,7 @@
     <nav class="tabs">
         <button class="tab active" data-tab="anomalies">🔴 Anomaliler</button>
         <button class="tab" data-tab="analyses">🔮 Maç Analizleri</button>
+        <button class="tab" data-tab="upcoming">📅 Yaklaşan Maçlar</button>
     </nav>
 
     <!-- ANOMALIES TAB -->
@@ -34,6 +35,7 @@
                     <option value="ignored">Gözardı Edildi</option>
                     <option value="following">Takip Ediliyor</option>
                 </select>
+                <input type="text" id="search-anomalies" class="input-search" placeholder="🔍 Ara (takım, lig...)">
                 <button id="btn-refresh" class="btn btn-secondary" title="Yenile">↻ Yenile</button>
             </div>
             <div class="toolbar-right">
@@ -50,18 +52,19 @@
                 <thead>
                     <tr>
                         <th class="col-check"><input type="checkbox" id="select-all-anomalies"></th>
-                        <th>Maç</th>
-                        <th>Skor</th>
-                        <th>Dk</th>
-                        <th>Lig</th>
-                        <th>Koşul</th>
+                        <th class="sortable" data-sort="match">Maç</th>
+                        <th class="sortable" data-sort="score">Skor</th>
+                        <th class="sortable" data-sort="minute">Dk</th>
+                        <th class="sortable" data-sort="league">Lig</th>
+                        <th class="sortable" data-sort="condition">Koşul</th>
                         <th>Kurallar</th>
-                        <th>Zaman</th>
+                        <th class="sortable" data-sort="alert">Uyarı #</th>
+                        <th class="sortable" data-sort="time">Zaman</th>
                         <th>İşlemler</th>
                     </tr>
                 </thead>
                 <tbody id="anomaly-body">
-                    <tr><td colspan="9" class="empty-msg">Yükleniyor...</td></tr>
+                    <tr><td colspan="10" class="empty-msg">Yükleniyor...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -71,6 +74,7 @@
     <section id="tab-analyses" class="tab-content">
         <div class="toolbar">
             <div class="toolbar-left">
+                <input type="text" id="search-analyses" class="input-search" placeholder="🔍 Ara...">
                 <button id="btn-refresh-analyses" class="btn btn-secondary">↻ Yenile</button>
             </div>
             <div class="toolbar-right">
@@ -81,6 +85,48 @@
 
         <div id="analyses-list" class="analyses-list">
             <div class="empty-msg">Yükleniyor...</div>
+        </div>
+    </section>
+
+    <!-- UPCOMING MATCHES TAB -->
+    <section id="tab-upcoming" class="tab-content">
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <select id="filter-upcoming-status" class="input-select">
+                    <option value="">Tüm Durumlar</option>
+                    <option value="new">Yeni</option>
+                    <option value="following">Takip Ediliyor</option>
+                    <option value="ignored">Gözardı Edildi</option>
+                </select>
+                <input type="text" id="search-upcoming" class="input-search" placeholder="🔍 Ara (takım, lig...)">
+                <button id="btn-refresh-upcoming" class="btn btn-secondary">↻ Yenile</button>
+                <button id="btn-trigger-upcoming" class="btn btn-secondary" title="Yaklaşan maçları şimdi çek">🚀 Maçları Çek</button>
+            </div>
+            <div class="toolbar-right">
+                <span id="selected-count-upcoming" class="selected-count">0 seçili</span>
+                <button id="btn-bulk-follow-upcoming" class="btn btn-action" disabled>👁 Takip Et</button>
+                <button id="btn-bulk-ignore-upcoming" class="btn btn-action" disabled>🚫 Gözardı Et</button>
+                <button id="btn-bulk-delete-upcoming" class="btn btn-danger" disabled>🗑 Sil</button>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table id="upcoming-table">
+                <thead>
+                    <tr>
+                        <th class="col-check"><input type="checkbox" id="select-all-upcoming"></th>
+                        <th class="sortable" data-sort="match">Maç</th>
+                        <th class="sortable" data-sort="start">Başlangıç</th>
+                        <th class="sortable" data-sort="league">Lig</th>
+                        <th class="sortable" data-sort="round">Tur</th>
+                        <th class="sortable" data-sort="status">Durum</th>
+                        <th>İşlemler</th>
+                    </tr>
+                </thead>
+                <tbody id="upcoming-body">
+                    <tr><td colspan="7" class="empty-msg">Yükleniyor...</td></tr>
+                </tbody>
+            </table>
         </div>
     </section>
 

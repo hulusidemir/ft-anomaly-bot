@@ -17,6 +17,8 @@ import config
 from db import (
     init_db, close_db, get_anomalies, update_anomaly_status,
     bulk_update_anomaly_status, delete_anomalies, get_analyses, delete_analyses,
+    get_upcoming_matches_db, update_upcoming_match_status,
+    bulk_update_upcoming_status, delete_upcoming_matches,
 )
 from workers import live_scan, upcoming_scan
 from scraper import scraper
@@ -174,6 +176,45 @@ async def api_delete_analyses(request: Request):
     if not ids:
         return JSONResponse({"error": "No ids provided"}, status_code=400)
     await delete_analyses(ids)
+    return {"ok": True}
+
+
+# ---- Upcoming Matches Endpoints ----
+
+@app.get("/api/upcoming")
+async def api_upcoming(date: str | None = None, status: str | None = None):
+    rows = await get_upcoming_matches_db(scan_date=date, status_filter=status)
+    return rows
+
+
+@app.post("/api/upcoming/{match_id}/status")
+async def api_update_upcoming_status(match_id: int, request: Request):
+    body = await request.json()
+    status = body.get("status")
+    if status not in ("new", "following", "ignored"):
+        return JSONResponse({"error": "Invalid status"}, status_code=400)
+    await update_upcoming_match_status(match_id, status)
+    return {"ok": True}
+
+
+@app.post("/api/upcoming/bulk-status")
+async def api_bulk_upcoming_status(request: Request):
+    body = await request.json()
+    ids = body.get("ids", [])
+    status = body.get("status")
+    if not ids or status not in ("new", "following", "ignored"):
+        return JSONResponse({"error": "Invalid request"}, status_code=400)
+    await bulk_update_upcoming_status(ids, status)
+    return {"ok": True}
+
+
+@app.post("/api/upcoming/delete")
+async def api_delete_upcoming(request: Request):
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        return JSONResponse({"error": "No ids provided"}, status_code=400)
+    await delete_upcoming_matches(ids)
     return {"ok": True}
 
 
