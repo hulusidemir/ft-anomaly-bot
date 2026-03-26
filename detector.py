@@ -1,0 +1,175 @@
+"""
+Anomaly detection engine.
+Evaluates Condition A (draw) and Condition B (1-goal difference)
+against live match statistics.
+"""
+
+from scraper import LiveMatch, MatchStats
+
+
+def _pct_more(a: float, b: float) -> float:
+    """Return how much `a` is percentage-wise more than `b`. E.g. a=60, b=40 → 20."""
+    return a - b
+
+
+def _pct_ratio_more(a: float, b: float) -> float:
+    """Return percentage by which `a` exceeds `b`. E.g. a=13, b=10 → 30%."""
+    if b == 0:
+        return 100.0 if a > 0 else 0.0
+    return ((a - b) / b) * 100.0
+
+
+def check_condition_a(match: LiveMatch, stats: MatchStats) -> list[str]:
+    """
+    Condition A: Score is TIED (Draw).
+    Returns list of triggered rule descriptions.
+    """
+    if match.score_home != match.score_away:
+        return []
+
+    triggered = []
+
+    # 1. Possession: one team >= 15% higher
+    possession_diff = abs(stats.possession_home - stats.possession_away)
+    if possession_diff >= 15:
+        dominant = "Home" if stats.possession_home > stats.possession_away else "Away"
+        triggered.append(
+            f"Possession gap: {stats.possession_home:.0f}% vs {stats.possession_away:.0f}% "
+            f"({dominant} +{possession_diff:.0f}%)"
+        )
+
+    # 2. Dangerous Attacks: one team >= 10% more
+    da_home, da_away = stats.dangerous_attacks_home, stats.dangerous_attacks_away
+    if da_home > 0 or da_away > 0:
+        da_diff = _pct_ratio_more(max(da_home, da_away), min(da_home, da_away))
+        if da_diff >= 10:
+            dominant = "Home" if da_home > da_away else "Away"
+            triggered.append(
+                f"Dangerous Attacks: {da_home} vs {da_away} "
+                f"({dominant} +{da_diff:.0f}%)"
+            )
+
+    # 3. Total Shots: one team >= 30% more
+    ts_home, ts_away = stats.total_shots_home, stats.total_shots_away
+    if ts_home > 0 or ts_away > 0:
+        ts_diff = _pct_ratio_more(max(ts_home, ts_away), min(ts_home, ts_away))
+        if ts_diff >= 30:
+            dominant = "Home" if ts_home > ts_away else "Away"
+            triggered.append(
+                f"Total Shots: {ts_home} vs {ts_away} "
+                f"({dominant} +{ts_diff:.0f}%)"
+            )
+
+    # 4. Shots on Target: one team >= 15% more
+    sot_home, sot_away = stats.shots_on_target_home, stats.shots_on_target_away
+    if sot_home > 0 or sot_away > 0:
+        sot_diff = _pct_ratio_more(max(sot_home, sot_away), min(sot_home, sot_away))
+        if sot_diff >= 15:
+            dominant = "Home" if sot_home > sot_away else "Away"
+            triggered.append(
+                f"Shots on Target: {sot_home} vs {sot_away} "
+                f"({dominant} +{sot_diff:.0f}%)"
+            )
+
+    # 5. Cards: >= 2 Yellow total OR >= 1 Red total
+    total_yellow = stats.yellow_cards_home + stats.yellow_cards_away
+    total_red = stats.red_cards_home + stats.red_cards_away
+    if total_yellow >= 2 or total_red >= 1:
+        triggered.append(
+            f"Cards: {total_yellow} Yellow, {total_red} Red total"
+        )
+
+    return triggered
+
+
+def check_condition_b(match: LiveMatch, stats: MatchStats) -> list[str]:
+    """
+    Condition B: Score difference is EXACTLY 1.
+    Analyzes the LOSING team stats.
+    Returns list of triggered rule descriptions.
+    """
+    score_diff = abs(match.score_home - match.score_away)
+    if score_diff != 1:
+        return []
+
+    # Determine winning/losing side
+    if match.score_home > match.score_away:
+        winning_side = "Home"
+        losing_side = "Away"
+        # Losing team stats
+        l_poss = stats.possession_away
+        w_poss = stats.possession_home
+        l_da = stats.dangerous_attacks_away
+        w_da = stats.dangerous_attacks_home
+        l_ts = stats.total_shots_away
+        w_ts = stats.total_shots_home
+        l_sot = stats.shots_on_target_away
+        w_sot = stats.shots_on_target_home
+        w_yellow = stats.yellow_cards_home
+        w_red = stats.red_cards_home
+    else:
+        winning_side = "Away"
+        losing_side = "Home"
+        l_poss = stats.possession_home
+        w_poss = stats.possession_away
+        l_da = stats.dangerous_attacks_home
+        w_da = stats.dangerous_attacks_away
+        l_ts = stats.total_shots_home
+        w_ts = stats.total_shots_away
+        l_sot = stats.shots_on_target_home
+        w_sot = stats.shots_on_target_away
+        w_yellow = stats.yellow_cards_away
+        w_red = stats.red_cards_away
+
+    losing_team = match.away_team if winning_side == "Home" else match.home_team
+
+    triggered = []
+
+    # 1. Losing team possession > Winning team possession
+    if l_poss > w_poss:
+        triggered.append(
+            f"Losing team ({losing_team}) has more possession: "
+            f"{l_poss:.0f}% vs {w_poss:.0f}%"
+        )
+
+    # 2. Losing team dangerous attacks > Winning team dangerous attacks
+    if l_da > w_da:
+        triggered.append(
+            f"Losing team ({losing_team}) has more dangerous attacks: "
+            f"{l_da} vs {w_da}"
+        )
+
+    # 3. Losing team >= 20% more total shots AND >= 20% more shots on target
+    ts_pct = _pct_ratio_more(l_ts, w_ts) if w_ts > 0 else (100.0 if l_ts > 0 else 0.0)
+    sot_pct = _pct_ratio_more(l_sot, w_sot) if w_sot > 0 else (100.0 if l_sot > 0 else 0.0)
+    if ts_pct >= 20 and sot_pct >= 20:
+        triggered.append(
+            f"Losing team ({losing_team}) shots dominance: "
+            f"Total {l_ts} vs {w_ts} (+{ts_pct:.0f}%), "
+            f"On Target {l_sot} vs {w_sot} (+{sot_pct:.0f}%)"
+        )
+
+    # 4. Winning team has > 2 Yellow OR >= 1 Red
+    if w_yellow > 2 or w_red >= 1:
+        triggered.append(
+            f"Winning team cards: {w_yellow} Yellow, {w_red} Red"
+        )
+
+    return triggered
+
+
+def detect_anomalies(match: LiveMatch, stats: MatchStats) -> list[tuple[str, list[str]]]:
+    """
+    Run all conditions. Returns list of (condition_type, triggered_rules) tuples.
+    """
+    results = []
+
+    rules_a = check_condition_a(match, stats)
+    if rules_a:
+        results.append(("A", rules_a))
+
+    rules_b = check_condition_b(match, stats)
+    if rules_b:
+        results.append(("B", rules_b))
+
+    return results

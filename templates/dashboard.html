@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Futbol Anomali Botu</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <div class="top-bar-left">
+            <h1>⚽ Anomali Bot</h1>
+        </div>
+        <div class="top-bar-right">
+            <span id="status-indicator" class="status-dot"></span>
+            <span id="status-text">Bağlanıyor...</span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab active" data-tab="anomalies">🔴 Anomaliler</button>
+        <button class="tab" data-tab="analyses">🔮 Maç Analizleri</button>
+    </nav>
+
+    <!-- ANOMALIES TAB -->
+    <section id="tab-anomalies" class="tab-content active">
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <select id="filter-status" class="input-select">
+                    <option value="">Tüm Durumlar</option>
+                    <option value="new">Yeni</option>
+                    <option value="bet_placed">Bahis Oynandı</option>
+                    <option value="ignored">Gözardı Edildi</option>
+                    <option value="following">Takip Ediliyor</option>
+                </select>
+                <button id="btn-refresh" class="btn btn-secondary" title="Yenile">↻ Yenile</button>
+            </div>
+            <div class="toolbar-right">
+                <span id="selected-count" class="selected-count">0 seçili</span>
+                <button id="btn-bulk-bet" class="btn btn-action" disabled>Bahis Oynandı</button>
+                <button id="btn-bulk-ignore" class="btn btn-action" disabled>Gözardı Et</button>
+                <button id="btn-bulk-follow" class="btn btn-action" disabled>Takip Et</button>
+                <button id="btn-bulk-delete" class="btn btn-danger" disabled>🗑 Sil</button>
+            </div>
+        </div>
+
+        <div class="table-wrap">
+            <table id="anomaly-table">
+                <thead>
+                    <tr>
+                        <th class="col-check"><input type="checkbox" id="select-all-anomalies"></th>
+                        <th>Maç</th>
+                        <th>Skor</th>
+                        <th>Dk</th>
+                        <th>Lig</th>
+                        <th>Koşul</th>
+                        <th>Kurallar</th>
+                        <th>Zaman</th>
+                        <th>İşlemler</th>
+                    </tr>
+                </thead>
+                <tbody id="anomaly-body">
+                    <tr><td colspan="9" class="empty-msg">Yükleniyor...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ANALYSES TAB -->
+    <section id="tab-analyses" class="tab-content">
+        <div class="toolbar">
+            <div class="toolbar-left">
+                <button id="btn-refresh-analyses" class="btn btn-secondary">↻ Yenile</button>
+            </div>
+            <div class="toolbar-right">
+                <span id="selected-count-analyses" class="selected-count">0 seçili</span>
+                <button id="btn-delete-analyses" class="btn btn-danger" disabled>🗑 Sil</button>
+            </div>
+        </div>
+
+        <div id="analyses-list" class="analyses-list">
+            <div class="empty-msg">Yükleniyor...</div>
+        </div>
+    </section>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
