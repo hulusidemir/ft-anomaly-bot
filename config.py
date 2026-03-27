@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+_raw_chat_ids = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_CHAT_IDS = [cid.strip() for cid in _raw_chat_ids.split(",") if cid.strip()]
+TELEGRAM_CHAT_ID = TELEGRAM_CHAT_IDS[0] if TELEGRAM_CHAT_IDS else ""
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/anomaly_bot.db")
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "120"))

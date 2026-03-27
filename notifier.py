@@ -5,7 +5,7 @@ Uses direct HTTP calls — no heavy SDK dependencies.
 
 import logging
 import aiohttp
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY, GEMINI_URL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_CHAT_IDS, GEMINI_API_KEY, GEMINI_URL
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +16,29 @@ async def send_telegram(
     text: str, parse_mode: str = "HTML",
     _allow_chunked: bool = True, reply_to_message_id: int | None = None,
 ) -> int | None:
-    """Send a message to the configured Telegram chat. Returns message_id on success."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    """Send a message to all configured Telegram chats. Returns message_id from primary chat."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS:
         logger.warning("Telegram credentials not configured")
         return None
 
+    primary_msg_id = None
+    for chat_id in TELEGRAM_CHAT_IDS:
+        msg_id = await _send_to_chat(
+            chat_id, text, parse_mode, _allow_chunked, reply_to_message_id,
+        )
+        if primary_msg_id is None:
+            primary_msg_id = msg_id
+    return primary_msg_id
+
+
+async def _send_to_chat(
+    chat_id: str, text: str, parse_mode: str = "HTML",
+    _allow_chunked: bool = True, reply_to_message_id: int | None = None,
+) -> int | None:
+    """Send a message to a single Telegram chat. Returns message_id on success."""
     url = f"{TELEGRAM_API}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode,
         "disable_web_page_preview": True,
@@ -39,7 +54,7 @@ async def send_telegram(
                     data = await resp.json()
                     return data.get("result", {}).get("message_id")
                 body = await resp.text()
-                logger.error(f"Telegram API error {resp.status}: {body}")
+                logger.error(f"Telegram API error {resp.status} for chat {chat_id}: {body}")
 
                 # If message too long, try splitting
                 if _allow_chunked and resp.status == 400 and "message is too long" in body.lower():
