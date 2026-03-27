@@ -268,8 +268,9 @@ class SofascoreScraper:
             for item in group.get("statisticsItems", []):
                 key = item.get("key", "").lower()
                 name = item.get("name", "").lower()
-                home_val = item.get("home", "0")
-                away_val = item.get("away", "0")
+                # Prefer homeValue/awayValue (numeric) with home/away (display) as fallback
+                home_val = item.get("homeValue", item.get("home", "0"))
+                away_val = item.get("awayValue", item.get("away", "0"))
 
                 if key == "ballpossession" or "ball possession" in name or name == "possession":
                     stats.possession_home = self._parse_stat_value(home_val)
@@ -277,20 +278,20 @@ class SofascoreScraper:
                 elif key == "dangerousattacks" or "dangerous attack" in name:
                     stats.dangerous_attacks_home = int(self._parse_stat_value(home_val))
                     stats.dangerous_attacks_away = int(self._parse_stat_value(away_val))
-                elif key == "shotsongoal" or "shots on target" in name or name == "on target":
+                elif key in ("shotsongoal", "shotsontarget") or "shots on target" in name or name == "on target":
                     val_h = int(self._parse_stat_value(home_val))
                     val_a = int(self._parse_stat_value(away_val))
                     stats.shots_on_target_home = val_h
                     stats.shots_on_target_away = val_a
                     shots_on_home = val_h
                     shots_on_away = val_a
-                elif key == "shotsoffgoal" or "shots off target" in name or name == "off target":
+                elif key in ("shotsoffgoal", "shotsofftarget") or "shots off target" in name or name == "off target":
                     shots_off_home = int(self._parse_stat_value(home_val))
                     shots_off_away = int(self._parse_stat_value(away_val))
                 elif key == "blockedscoringattempt" or "blocked shot" in name:
                     blocked_home = int(self._parse_stat_value(home_val))
                     blocked_away = int(self._parse_stat_value(away_val))
-                elif key == "totalshots" or name in ("total shots", "shots total", "total attempts"):
+                elif key in ("totalshots", "totalshotsongoal") or name in ("total shots", "shots total", "total attempts"):
                     stats.total_shots_home = int(self._parse_stat_value(home_val))
                     stats.total_shots_away = int(self._parse_stat_value(away_val))
                 elif key == "yellowcards" or "yellow card" in name:

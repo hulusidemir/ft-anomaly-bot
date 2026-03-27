@@ -108,12 +108,27 @@ def format_anomaly_message(
 
     lines.append("")
     lines.append("<b>İstatistik Özeti:</b>")
-    lines.append(f"  Topa Sahip Olma: {stats.get('possession_home', 0):.0f}% - {stats.get('possession_away', 0):.0f}%")
-    lines.append(f"  Tehlikeli Ataklar: {stats.get('dangerous_attacks_home', 0)} - {stats.get('dangerous_attacks_away', 0)}")
-    lines.append(f"  Toplam Şut: {stats.get('total_shots_home', 0)} - {stats.get('total_shots_away', 0)}")
-    lines.append(f"  İsabetli Şut: {stats.get('shots_on_target_home', 0)} - {stats.get('shots_on_target_away', 0)}")
-    lines.append(f"  Sarı Kart: {stats.get('yellow_cards_home', 0)} - {stats.get('yellow_cards_away', 0)}")
-    lines.append(f"  Kırmızı Kart: {stats.get('red_cards_home', 0)} - {stats.get('red_cards_away', 0)}")
+
+    ph = stats.get('possession_home', 0)
+    pa = stats.get('possession_away', 0)
+    dah = stats.get('dangerous_attacks_home', 0)
+    daa = stats.get('dangerous_attacks_away', 0)
+    tsh = stats.get('total_shots_home', 0)
+    tsa = stats.get('total_shots_away', 0)
+    soth = stats.get('shots_on_target_home', 0)
+    sota = stats.get('shots_on_target_away', 0)
+    ych = stats.get('yellow_cards_home', 0)
+    yca = stats.get('yellow_cards_away', 0)
+    rch = stats.get('red_cards_home', 0)
+    rca = stats.get('red_cards_away', 0)
+
+    na = "Veri yok"
+    lines.append(f"  Topa Sahip Olma: {f'{ph:.0f}% - {pa:.0f}%' if ph or pa else na}")
+    lines.append(f"  Tehlikeli Ataklar: {f'{dah} - {daa}' if dah or daa else na}")
+    lines.append(f"  Toplam Şut: {f'{tsh} - {tsa}' if tsh or tsa else na}")
+    lines.append(f"  İsabetli Şut: {f'{soth} - {sota}' if soth or sota else na}")
+    lines.append(f"  Sarı Kart: {ych} - {yca}")
+    lines.append(f"  Kırmızı Kart: {rch} - {rca}")
 
     return "\n".join(lines)
 
