@@ -176,7 +176,7 @@ function renderAnomalies() {
         const rules = (a.triggered_rules || []);
         const ruleHtml = rules.map(r => `<li>${escHtml(r)}</li>`).join('');
         const stateClass = a.status !== 'new' ? `state-${a.status}` : '';
-        const time = a.created_at ? new Date(a.created_at + 'Z').toLocaleTimeString() : '';
+        const time = a.created_at ? new Date(a.created_at + 'Z').toLocaleTimeString('tr-TR', { timeZone: 'Europe/Istanbul' }) : '';
         const condBadge = a.condition_type === 'A'
             ? '<span class="badge badge-a">A — Beraberlik</span>'
             : '<span class="badge badge-b">B — 1 Fark</span>';
@@ -301,7 +301,7 @@ function renderAnalyses() {
     }
 
     container.innerHTML = filtered.map(a => {
-        const time = a.created_at ? new Date(a.created_at + 'Z').toLocaleString() : '';
+        const time = a.created_at ? new Date(a.created_at + 'Z').toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' }) : '';
         const runLabel = a.run_type === 'morning' ? '🌅 Sabah' : a.run_type === 'evening' ? '🌆 Akşam' : '🔧 Manuel';
         return `
         <div class="analysis-card" data-id="${a.id}">

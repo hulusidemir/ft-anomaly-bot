@@ -3,10 +3,10 @@ import random
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from curl_cffi.requests import AsyncSession
-from config import SOFASCORE_BASE
+from config import SOFASCORE_BASE, TZ_TURKEY
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +311,7 @@ class SofascoreScraper:
 
     async def get_upcoming_matches(self) -> list[UpcomingMatch]:
         """Fetch today's upcoming (scheduled) football matches."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
         data = await self._fetch_json(
             f"{SOFASCORE_BASE}/sport/football/scheduled-events/{today}"
         )

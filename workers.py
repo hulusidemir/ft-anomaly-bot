@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from scraper import scraper, UpcomingMatch
 from collections import defaultdict
 from detector import detect_anomalies
+from config import TZ_TURKEY
 from notifier import (
     send_telegram, format_anomaly_message,
     ask_gemini, build_gemini_prompt,
@@ -114,7 +115,7 @@ async def live_scan():
                     and detect_anomalies(m, s)
                 })
                 if anomaly_event_ids:
-                    scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    scan_date = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
                     await mark_upcoming_anomaly(anomaly_event_ids, scan_date)
             else:
                 logger.debug("No new anomalies found")
@@ -140,7 +141,7 @@ async def upcoming_scan(run_type: str = "morning"):
                 return
 
             # ── 0. Save matches to DB ──
-            scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            scan_date = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
             match_dicts = [
                 {
                     "event_id": m.event_id,
@@ -195,7 +196,7 @@ async def upcoming_scan(run_type: str = "morning"):
             header = (
                 f"🔮 <b>Maç Analizi — "
                 f"{'Sabah' if run_type == 'morning' else 'Akşam'} Raporu</b>\n"
-                f"📅 {datetime.now(timezone.utc).strftime('%Y-%m-%d')}\n"
+                f"📅 {datetime.now(TZ_TURKEY).strftime('%Y-%m-%d')}\n"
                 f"📊 {len(matches)} maç analiz edildi\n\n"
             )
             await send_telegram(
@@ -213,8 +214,7 @@ def _fmt_time_utc3(ts_str: str) -> str:
     try:
         ts = int(ts_str)
         if ts > 0:
-            utc3 = datetime.fromtimestamp(ts, tz=timezone.utc) + timedelta(hours=3)
-            return utc3.strftime("%H:%M")
+            return datetime.fromtimestamp(ts, tz=TZ_TURKEY).strftime("%H:%M")
     except (ValueError, OSError):
         pass
     return "TBD"
@@ -222,7 +222,7 @@ def _fmt_time_utc3(ts_str: str) -> str:
 
 def _format_match_list(matches: list[UpcomingMatch], run_type: str) -> str:
     """Format upcoming matches grouped by country/league for Telegram."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
     period = "Sabah" if run_type == "morning" else "Akşam"
 
     lines = [

@@ -1,7 +1,11 @@
 import os
+from datetime import timezone, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Timezone: Turkey (UTC+3)
+TZ_TURKEY = timezone(timedelta(hours=3))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 _raw_chat_ids = os.getenv("TELEGRAM_CHAT_ID", "")
