@@ -521,6 +521,46 @@ function formatStartTime(startTime, scanDate) {
     return '';
 }
 
+// ===== AI Analysis Modal =====
+$('#btn-ai-analysis').addEventListener('click', async () => {
+    const modal = $('#ai-modal');
+    const meta = $('#modal-meta');
+    const body = $('#modal-body');
+
+    modal.style.display = 'flex';
+    meta.textContent = '';
+    body.textContent = 'Yükleniyor...';
+
+    const data = await apiFetch(API.analyses);
+    if (!data || data.length === 0) {
+        meta.textContent = '';
+        body.innerHTML = '<div class="empty-msg">Henüz yapay zeka analizi bulunmuyor.</div>';
+        return;
+    }
+
+    const latest = data[0]; // most recent
+    const time = latest.created_at ? new Date(latest.created_at + 'Z').toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' }) : '';
+    const runLabel = latest.run_type === 'morning' ? '🌅 Sabah' : latest.run_type === 'evening' ? '🌆 Akşam' : '🔧 Manuel';
+    meta.textContent = `${runLabel} Raporu — ${latest.match_count} maç analiz edildi — ${time}`;
+    body.textContent = latest.analysis_text || 'Analiz metni bulunamadı.';
+});
+
+$('#modal-close').addEventListener('click', () => {
+    $('#ai-modal').style.display = 'none';
+});
+
+$('#ai-modal').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) {
+        $('#ai-modal').style.display = 'none';
+    }
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('#ai-modal').style.display !== 'none') {
+        $('#ai-modal').style.display = 'none';
+    }
+});
+
 // ===== Init =====
 (async () => {
     initSortableHeaders();
