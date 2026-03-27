@@ -11,7 +11,10 @@ from config import SOFASCORE_BASE, TZ_TURKEY
 logger = logging.getLogger(__name__)
 
 # Impersonation targets for curl_cffi (rotated on 403)
-IMPERSONATE_TARGETS = ["chrome", "chrome110", "chrome120"]
+IMPERSONATE_TARGETS = [
+    "chrome131", "chrome124", "chrome123", "chrome120",
+    "safari17_0", "safari15_5", "edge101",
+]
 
 
 @dataclass
@@ -74,29 +77,37 @@ class SofascoreScraper:
         self._session: AsyncSession | None = None
         self._rate_lock = asyncio.Lock()
         self._last_request_time = 0.0
-        self._impersonate = "chrome"
+        self._impersonate = random.choice(IMPERSONATE_TARGETS)
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
             self._session = AsyncSession(
                 impersonate=self._impersonate,
                 headers={
-                    "Accept": "application/json",
-                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": "application/json, text/plain, */*",
+                    "Accept-Language": "en-US,en;q=0.9,tr;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
                     "Referer": "https://www.sofascore.com/",
+                    "Origin": "https://www.sofascore.com",
                     "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-site",
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
                 },
                 timeout=15,
             )
         return self._session
 
-    async def _fetch_json(self, url: str, retries: int = 3) -> dict | None:
+    async def _fetch_json(self, url: str, retries: int = 5) -> dict | None:
         for attempt in range(retries):
             try:
                 async with self._rate_lock:
                     # Enforce minimum delay between requests
                     elapsed = time.monotonic() - self._last_request_time
-                    min_delay = random.uniform(1.2, 2.8)
+                    min_delay = random.uniform(1.5, 3.5)
                     if elapsed < min_delay:
                         await asyncio.sleep(min_delay - elapsed)
                     session = await self._get_session()
@@ -104,6 +115,7 @@ class SofascoreScraper:
                     resp = await session.get(url)
             except Exception as e:
                 logger.warning(f"Request error on {url}: {e}")
+                await self._rotate_session()
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
 
@@ -114,10 +126,9 @@ class SofascoreScraper:
                 logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
             elif resp.status_code == 403:
-                wait = (2 ** attempt) * 3 + random.uniform(1, 2)
-                logger.warning(f"Forbidden (403) on {url}, attempt {attempt+1}")
-                async with self._rate_lock:
-                    await self._rotate_session()
+                wait = (2 ** attempt) * 3 + random.uniform(2, 5)
+                logger.warning(f"Forbidden (403) on {url}, attempt {attempt+1}/{retries}, rotating session")
+                await self._rotate_session()
                 await asyncio.sleep(wait)
             elif resp.status_code >= 500:
                 wait = (2 ** attempt) * 2 + random.uniform(1, 2)
@@ -133,7 +144,10 @@ class SofascoreScraper:
         if self._session:
             await self._session.close()
             self._session = None
-        self._impersonate = random.choice(IMPERSONATE_TARGETS)
+        # Pick a different target than the current one
+        others = [t for t in IMPERSONATE_TARGETS if t != self._impersonate]
+        self._impersonate = random.choice(others) if others else self._impersonate
+        logger.debug(f"Rotated to impersonate: {self._impersonate}")
 
     def _parse_minute(self, event: dict) -> int:
         """Extract current match minute from event data.
