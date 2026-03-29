@@ -22,9 +22,12 @@ async def send_telegram(
         return None
 
     primary_msg_id = None
-    for chat_id in TELEGRAM_CHAT_IDS:
+    for idx, chat_id in enumerate(TELEGRAM_CHAT_IDS):
+        # A reply message id only belongs to the chat where it was created.
+        # For secondary chats we send the same content without reply threading.
+        chat_reply_id = reply_to_message_id if idx == 0 else None
         msg_id = await _send_to_chat(
-            chat_id, text, parse_mode, _allow_chunked, reply_to_message_id,
+            chat_id, text, parse_mode, _allow_chunked, chat_reply_id,
         )
         if primary_msg_id is None:
             primary_msg_id = msg_id
@@ -59,7 +62,7 @@ async def _send_to_chat(
                 # If message too long, try splitting
                 if _allow_chunked and resp.status == 400 and "message is too long" in body.lower():
                     return await _send_telegram_chunked(
-                        text, parse_mode, reply_to_message_id
+                        chat_id, text, parse_mode, reply_to_message_id
                     )
                 return None
     except Exception as e:
@@ -68,7 +71,7 @@ async def _send_to_chat(
 
 
 async def _send_telegram_chunked(
-    text: str, parse_mode: str, reply_to_message_id: int | None = None,
+    chat_id: str, text: str, parse_mode: str, reply_to_message_id: int | None = None,
 ) -> int | None:
     """Split long messages into 4000-char chunks. Returns last message_id."""
     chunks = []
@@ -86,8 +89,8 @@ async def _send_telegram_chunked(
     last_msg_id = None
     for i, chunk in enumerate(chunks):
         reply_id = reply_to_message_id if i == 0 else None
-        msg_id = await send_telegram(
-            chunk, parse_mode, _allow_chunked=False,
+        msg_id = await _send_to_chat(
+            chat_id, chunk, parse_mode, _allow_chunked=False,
             reply_to_message_id=reply_id,
         )
         if msg_id:

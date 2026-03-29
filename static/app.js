@@ -132,6 +132,11 @@ function filterBySearch(data, query, getSearchText) {
     return data.filter(item => getSearchText(item).toLowerCase().includes(q));
 }
 
+function sofascoreEventUrl(eventId) {
+    if (!eventId) return '#';
+    return `https://www.sofascore.com/event/${encodeURIComponent(eventId)}`;
+}
+
 // ===== Anomalies =====
 async function loadAnomalies() {
     const filter = $('#filter-status').value;
@@ -188,7 +193,11 @@ function renderAnomalies() {
         return `
         <tr class="${stateClass}" data-id="${a.id}">
             <td class="col-check"><input type="checkbox" class="chk-anomaly" data-id="${a.id}"></td>
-            <td><strong>${escHtml(a.home_team)}</strong> vs <strong>${escHtml(a.away_team)}</strong></td>
+            <td>
+                <a class="match-link" href="${sofascoreEventUrl(a.match_id)}" target="_blank" rel="noopener noreferrer">
+                    <strong>${escHtml(a.home_team)}</strong> vs <strong>${escHtml(a.away_team)}</strong>
+                </a>
+            </td>
             <td>${a.score_home} - ${a.score_away}</td>
             <td>${a.minute}'</td>
             <td>${escHtml(a.league)}</td>
@@ -391,7 +400,11 @@ function renderUpcoming() {
         return `
         <tr class="${stateClass} ${anomalyClass}" data-id="${m.id}">
             <td class="col-check"><input type="checkbox" class="chk-upcoming" data-id="${m.id}"></td>
-            <td><strong>${escHtml(m.home_team)}</strong> vs <strong>${escHtml(m.away_team)}</strong></td>
+            <td>
+                <a class="match-link" href="${sofascoreEventUrl(m.event_id)}" target="_blank" rel="noopener noreferrer">
+                    <strong>${escHtml(m.home_team)}</strong> vs <strong>${escHtml(m.away_team)}</strong>
+                </a>
+            </td>
             <td>${startTime}</td>
             <td>${escHtml(m.league)}</td>
             <td>${escHtml(m.round_info || '')}</td>
