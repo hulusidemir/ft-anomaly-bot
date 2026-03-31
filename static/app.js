@@ -5,12 +5,15 @@ const API = {
     updateStatus: (id) => `/api/anomalies/${id}/status`,
     bulkStatus: '/api/anomalies/bulk-status',
     deleteAnomalies: '/api/anomalies/delete',
+    clearAnomalies: '/api/anomalies/clear',
     analyses: '/api/analyses',
     deleteAnalyses: '/api/analyses/delete',
+    clearAnalyses: '/api/analyses/clear',
     upcoming: (status) => `/api/upcoming${status ? `?status=${status}` : ''}`,
     updateUpcomingStatus: (id) => `/api/upcoming/${id}/status`,
     bulkUpcomingStatus: '/api/upcoming/bulk-status',
     deleteUpcoming: '/api/upcoming/delete',
+    clearUpcoming: '/api/upcoming/clear',
     status: '/api/status',
     triggerLive: '/api/trigger/live-scan',
     triggerUpcoming: '/api/trigger/upcoming-scan',
@@ -70,6 +73,45 @@ async function apiFetch(url, opts = {}) {
 
 async function apiPost(url, body) {
     return apiFetch(url, { method: 'POST', body: JSON.stringify(body) });
+}
+
+async function postRaw(url, body) {
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body || {}),
+        });
+        return { ok: resp.ok, status: resp.status };
+    } catch (e) {
+        return { ok: false, status: 0, error: e };
+    }
+}
+
+async function clearAllWithFallback({ clearUrl, deleteUrl, ids, emptyText, successText }) {
+    if (!ids.length) {
+        toast(emptyText);
+        return false;
+    }
+
+    const clearRes = await postRaw(clearUrl, {});
+    if (clearRes.ok) {
+        toast(successText);
+        return true;
+    }
+
+    // Backward compatibility: if backend has no /clear endpoint yet, fallback to delete-by-ids.
+    if (clearRes.status === 404) {
+        const deleteRes = await apiPost(deleteUrl, { ids });
+        if (deleteRes && deleteRes.ok) {
+            toast(successText);
+            return true;
+        }
+    }
+
+    const code = clearRes.status || 'ağ';
+    toast(`İstek başarısız: HTTP ${code}`, true);
+    return false;
 }
 
 // ===== Status Check =====
@@ -269,6 +311,20 @@ $('#btn-bulk-delete').addEventListener('click', async () => {
     }
 });
 
+$('#btn-clear-all-anomalies').addEventListener('click', async () => {
+    if (!confirm('Tüm anomali geçmişi silinsin mi? Bu işlem geri alınamaz.')) return;
+    const ok = await clearAllWithFallback({
+        clearUrl: API.clearAnomalies,
+        deleteUrl: API.deleteAnomalies,
+        ids: anomalies.map(a => a.id),
+        emptyText: 'Silinecek anomali bulunamadı',
+        successText: 'Tüm anomali geçmişi silindi',
+    });
+    if (ok) {
+        await loadAnomalies();
+    }
+});
+
 async function bulkStatus(status) {
     const ids = [...selectedAnomalies];
     const res = await apiPost(API.bulkStatus, { ids, status });
@@ -344,6 +400,20 @@ $('#btn-delete-analyses').addEventListener('click', async () => {
     const res = await apiPost(API.deleteAnalyses, { ids });
     if (res && res.ok) {
         toast(`${ids.length} analiz silindi`);
+        await loadAnalyses();
+    }
+});
+
+$('#btn-clear-all-analyses').addEventListener('click', async () => {
+    if (!confirm('Tüm analiz geçmişi silinsin mi? Bu işlem geri alınamaz.')) return;
+    const ok = await clearAllWithFallback({
+        clearUrl: API.clearAnalyses,
+        deleteUrl: API.deleteAnalyses,
+        ids: analyses.map(a => a.id),
+        emptyText: 'Silinecek analiz bulunamadı',
+        successText: 'Tüm analiz geçmişi silindi',
+    });
+    if (ok) {
         await loadAnalyses();
     }
 });
@@ -469,6 +539,20 @@ $('#btn-bulk-delete-upcoming').addEventListener('click', async () => {
     const res = await apiPost(API.deleteUpcoming, { ids });
     if (res && res.ok) {
         toast(`${ids.length} maç silindi`);
+        await loadUpcoming();
+    }
+});
+
+$('#btn-clear-all-upcoming').addEventListener('click', async () => {
+    if (!confirm('Tüm geçmiş/yaklaşan maç kayıtları silinsin mi? Bu işlem geri alınamaz.')) return;
+    const ok = await clearAllWithFallback({
+        clearUrl: API.clearUpcoming,
+        deleteUrl: API.deleteUpcoming,
+        ids: upcomingMatches.map(m => m.id),
+        emptyText: 'Silinecek geçmiş maç bulunamadı',
+        successText: 'Tüm maç kayıtları silindi',
+    });
+    if (ok) {
         await loadUpcoming();
     }
 });

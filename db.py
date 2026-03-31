@@ -184,6 +184,12 @@ async def delete_anomalies(ids: list[int]):
     await db.commit()
 
 
+async def clear_anomalies():
+    db = await get_db()
+    await db.execute("DELETE FROM anomalies")
+    await db.commit()
+
+
 async def mark_notified(anomaly_id: int):
     db = await get_db()
     await db.execute(
@@ -219,6 +225,12 @@ async def delete_analyses(ids: list[int]):
     await db.execute(
         f"DELETE FROM upcoming_analyses WHERE id IN ({placeholders})", ids
     )
+    await db.commit()
+
+
+async def clear_analyses():
+    db = await get_db()
+    await db.execute("DELETE FROM upcoming_analyses")
     await db.commit()
 
 
@@ -304,6 +316,12 @@ async def delete_upcoming_matches(ids: list[int]):
     await db.execute(
         f"DELETE FROM upcoming_matches WHERE id IN ({placeholders})", ids
     )
+    await db.commit()
+
+
+async def clear_upcoming_matches():
+    db = await get_db()
+    await db.execute("DELETE FROM upcoming_matches")
     await db.commit()
 
 

@@ -16,9 +16,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 from db import (
     init_db, close_db, get_anomalies, update_anomaly_status,
-    bulk_update_anomaly_status, delete_anomalies, get_analyses, delete_analyses,
+    bulk_update_anomaly_status, delete_anomalies, clear_anomalies,
+    get_analyses, delete_analyses, clear_analyses,
     get_upcoming_matches_db, update_upcoming_match_status,
-    bulk_update_upcoming_status, delete_upcoming_matches,
+    bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
 )
 from workers import live_scan, upcoming_scan
 from scraper import scraper
@@ -164,6 +165,12 @@ async def api_delete_anomalies(request: Request):
     return {"ok": True}
 
 
+@app.post("/api/anomalies/clear")
+async def api_clear_anomalies():
+    await clear_anomalies()
+    return {"ok": True}
+
+
 @app.get("/api/analyses")
 async def api_analyses():
     return await get_analyses()
@@ -176,6 +183,12 @@ async def api_delete_analyses(request: Request):
     if not ids:
         return JSONResponse({"error": "No ids provided"}, status_code=400)
     await delete_analyses(ids)
+    return {"ok": True}
+
+
+@app.post("/api/analyses/clear")
+async def api_clear_analyses():
+    await clear_analyses()
     return {"ok": True}
 
 
@@ -215,6 +228,12 @@ async def api_delete_upcoming(request: Request):
     if not ids:
         return JSONResponse({"error": "No ids provided"}, status_code=400)
     await delete_upcoming_matches(ids)
+    return {"ok": True}
+
+
+@app.post("/api/upcoming/clear")
+async def api_clear_upcoming():
+    await clear_upcoming_matches()
     return {"ok": True}
 
 
