@@ -71,12 +71,11 @@ def check_condition_a(match: LiveMatch, stats: MatchStats) -> list[str]:
                 f"({dominant} +{sot_diff:.0f}%)"
             )
 
-    # 5. Cards: >= 3 Yellow total OR >= 1 Red total
-    total_yellow = stats.yellow_cards_home + stats.yellow_cards_away
+    # 5. Cards: >= 1 Red total
     total_red = stats.red_cards_home + stats.red_cards_away
-    if total_yellow >= 3 or total_red >= 1:
+    if total_red >= 1:
         triggered.append(
-            f"Kartlar: {total_yellow} Sarı, {total_red} Kırmızı (toplam)"
+            f"Kartlar: {total_red} Kırmızı (toplam)"
         )
 
     return triggered
@@ -105,7 +104,6 @@ def check_condition_b(match: LiveMatch, stats: MatchStats) -> list[str]:
         w_ts = stats.total_shots_home
         l_sot = stats.shots_on_target_away
         w_sot = stats.shots_on_target_home
-        w_yellow = stats.yellow_cards_home
         w_red = stats.red_cards_home
     else:
         winning_side = "Away"
@@ -118,7 +116,6 @@ def check_condition_b(match: LiveMatch, stats: MatchStats) -> list[str]:
         w_ts = stats.total_shots_away
         l_sot = stats.shots_on_target_home
         w_sot = stats.shots_on_target_away
-        w_yellow = stats.yellow_cards_away
         w_red = stats.red_cards_away
 
     losing_team = match.away_team if winning_side == "Home" else match.home_team
@@ -149,10 +146,10 @@ def check_condition_b(match: LiveMatch, stats: MatchStats) -> list[str]:
             f"İsabetli {l_sot} vs {w_sot} (+{sot_pct:.0f}%)"
         )
 
-    # 4. Winning team has > 2 Yellow OR >= 1 Red
-    if w_yellow > 2 or w_red >= 1:
+    # 4. Winning team has >= 1 Red
+    if w_red >= 1:
         triggered.append(
-            f"Kazanan takım kartları: {w_yellow} Sarı, {w_red} Kırmızı"
+            f"Kazanan takım kartları: {w_red} Kırmızı"
         )
 
     return triggered
