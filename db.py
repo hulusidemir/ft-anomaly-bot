@@ -234,6 +234,16 @@ async def clear_analyses():
     await db.commit()
 
 
+async def clear_database():
+    db = await get_db()
+    await db.executescript("""
+        DELETE FROM anomalies;
+        DELETE FROM upcoming_analyses;
+        DELETE FROM upcoming_matches;
+    """)
+    await db.commit()
+
+
 async def close_db():
     global _db
     if _db:

@@ -3,143 +3,157 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Futbol Anomali Botu</title>
+    <title>Futbol Anomali Kontrol Paneli</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <header class="top-bar">
-        <div class="top-bar-left">
-            <h1>⚽ Anomali Bot</h1>
-        </div>
-        <div class="top-bar-right">
-            <span id="status-indicator" class="status-dot"></span>
-            <span id="status-text">Bağlanıyor...</span>
-        </div>
-    </header>
+    <div class="page-shell">
+        <main class="dashboard-shell dashboard-shell-compact">
+            <header class="topbar-card">
+                <div class="brand-block">
+                    <div class="brand-mark">AB</div>
+                </div>
 
-    <nav class="tabs">
-        <button class="tab active" data-tab="anomalies">🔴 Anomaliler</button>
-        <button class="tab" data-tab="analyses">🔮 Maç Analizleri</button>
-        <button class="tab" data-tab="upcoming">📅 Yaklaşan Maçlar</button>
-    </nav>
+                <div class="topbar-meta">
+                    <span class="status-pill" id="status-pill" aria-label="Sistem durumu">
+                        <span id="status-indicator" class="status-dot"></span>
+                    </span>
+                    <span id="last-updated" class="visually-hidden">-</span>
+                    <span id="scheduler-count" class="visually-hidden">0</span>
+                </div>
 
-    <!-- ANOMALIES TAB -->
-    <section id="tab-anomalies" class="tab-content active">
-        <div class="toolbar">
-            <div class="toolbar-left">
-                <select id="filter-status" class="input-select">
-                    <option value="">Tüm Durumlar</option>
-                    <option value="new">Yeni</option>
-                    <option value="bet_placed">Bahis Oynandı</option>
-                    <option value="ignored">Gözardı Edildi</option>
-                    <option value="following">Takip Ediliyor</option>
-                </select>
-                <input type="text" id="search-anomalies" class="input-search" placeholder="🔍 Ara (takım, lig...)">
-                <button id="btn-refresh" class="btn btn-secondary" title="Yenile">↻ Yenile</button>
-            </div>
-            <div class="toolbar-right">
-                <button id="btn-clear-all-anomalies" class="btn btn-critical">Tümünü Sil</button>
-                <span id="selected-count" class="selected-count">0 seçili</span>
-                <button id="btn-bulk-bet" class="btn btn-action" disabled>Bahis Oynandı</button>
-                <button id="btn-bulk-ignore" class="btn btn-action" disabled>Gözardı Et</button>
-                <button id="btn-bulk-follow" class="btn btn-action" disabled>Takip Et</button>
-                <button id="btn-bulk-delete" class="btn btn-danger" disabled>🗑 Sil</button>
-            </div>
-        </div>
+                <div class="topbar-actions">
+                    <button id="btn-refresh-all" class="btn btn-secondary">Tümünü Yenile</button>
+                    <button id="btn-clear-database" class="btn btn-critical">VERİTABANINI TEMİZLE</button>
+                </div>
+            </header>
 
-        <div class="table-wrap">
-            <table id="anomaly-table">
-                <thead>
-                    <tr>
-                        <th class="col-check"><input type="checkbox" id="select-all-anomalies"></th>
-                        <th class="sortable" data-sort="match">Maç</th>
-                        <th class="sortable" data-sort="score">Skor</th>
-                        <th class="sortable" data-sort="minute">Dk</th>
-                        <th class="sortable" data-sort="league">Lig</th>
-                        <th class="sortable" data-sort="condition">Koşul</th>
-                        <th>Kurallar</th>
-                        <th class="sortable" data-sort="alert">Uyarı #</th>
-                        <th class="sortable" data-sort="time">Zaman</th>
-                        <th>İşlemler</th>
-                    </tr>
-                </thead>
-                <tbody id="anomaly-body">
-                    <tr><td colspan="10" class="empty-msg">Yükleniyor...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
+            <section class="workspace-panel compact-panel">
+                <nav class="tabs">
+                    <button class="tab active" data-tab="anomalies">Anomaliler</button>
+                    <button class="tab" data-tab="analyses">Maç Analizleri</button>
+                    <button class="tab" data-tab="upcoming">Yaklaşan Maçlar</button>
+                </nav>
 
-    <!-- ANALYSES TAB -->
-    <section id="tab-analyses" class="tab-content">
-        <div class="toolbar">
-            <div class="toolbar-left">
-                <input type="text" id="search-analyses" class="input-search" placeholder="🔍 Ara...">
-                <button id="btn-refresh-analyses" class="btn btn-secondary">↻ Yenile</button>
-            </div>
-            <div class="toolbar-right">
-                <button id="btn-clear-all-analyses" class="btn btn-critical">Tümünü Sil</button>
-                <span id="selected-count-analyses" class="selected-count">0 seçili</span>
-                <button id="btn-delete-analyses" class="btn btn-danger" disabled>🗑 Sil</button>
-            </div>
-        </div>
+                <section id="tab-anomalies" class="tab-content active">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <select id="filter-status" class="input-select">
+                                <option value="">Tüm Durumlar</option>
+                                <option value="new">Yeni</option>
+                                <option value="bet_placed">Bahis Oynandı</option>
+                                <option value="ignored">Gözardı Edildi</option>
+                                <option value="following">Takip Ediliyor</option>
+                            </select>
+                            <input type="text" id="search-anomalies" class="input-search" placeholder="Takım, lig veya koşul ara">
+                            <button id="btn-refresh" class="btn btn-secondary" title="Yenile">Listeyi Yenile</button>
+                        </div>
 
-        <div id="analyses-list" class="analyses-list">
-            <div class="empty-msg">Yükleniyor...</div>
-        </div>
-    </section>
+                        <div class="toolbar-right">
+                            <button id="btn-clear-all-anomalies" class="btn btn-ghost-danger">Anomali Geçmişini Sil</button>
+                            <span id="selected-count" class="selected-count">0 seçili</span>
+                            <button id="btn-bulk-bet" class="btn btn-action" disabled>Bahis Oynandı</button>
+                            <button id="btn-bulk-ignore" class="btn btn-action" disabled>Gözardı Et</button>
+                            <button id="btn-bulk-follow" class="btn btn-action" disabled>Takip Et</button>
+                            <button id="btn-bulk-delete" class="btn btn-danger" disabled>Seçilileri Sil</button>
+                        </div>
+                    </div>
 
-    <!-- UPCOMING MATCHES TAB -->
-    <section id="tab-upcoming" class="tab-content">
-        <div class="toolbar">
-            <div class="toolbar-left">
-                <select id="filter-upcoming-status" class="input-select">
-                    <option value="">Tüm Durumlar</option>
-                    <option value="new">Yeni</option>
-                    <option value="following">Takip Ediliyor</option>
-                    <option value="ignored">Gözardı Edildi</option>
-                </select>
-                <input type="text" id="search-upcoming" class="input-search" placeholder="🔍 Ara (takım, lig...)">
-                <button id="btn-refresh-upcoming" class="btn btn-secondary">↻ Yenile</button>
-                <button id="btn-trigger-upcoming" class="btn btn-secondary" title="Yaklaşan maçları şimdi çek">🚀 Maçları Çek</button>
-                <button id="btn-ai-analysis" class="btn btn-ai" title="Yapay Zeka Analizi">🤖 YZ Analizi</button>
-            </div>
-            <div class="toolbar-right">
-                <button id="btn-clear-all-upcoming" class="btn btn-critical">Tümünü Sil</button>
-                <span id="selected-count-upcoming" class="selected-count">0 seçili</span>
-                <button id="btn-bulk-follow-upcoming" class="btn btn-action" disabled>👁 Takip Et</button>
-                <button id="btn-bulk-ignore-upcoming" class="btn btn-action" disabled>🚫 Gözardı Et</button>
-                <button id="btn-bulk-delete-upcoming" class="btn btn-danger" disabled>🗑 Sil</button>
-            </div>
-        </div>
+                    <div class="table-wrap">
+                        <table id="anomaly-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"><input type="checkbox" id="select-all-anomalies"></th>
+                                    <th class="sortable" data-sort="match">Maç</th>
+                                    <th class="sortable" data-sort="score">Skor</th>
+                                    <th class="sortable" data-sort="minute">Dakika</th>
+                                    <th class="sortable" data-sort="league">Lig</th>
+                                    <th class="sortable" data-sort="condition">Koşul</th>
+                                    <th>Kurallar</th>
+                                    <th class="sortable" data-sort="alert">Uyarı</th>
+                                    <th class="sortable" data-sort="time">Saat</th>
+                                    <th>İşlemler</th>
+                                </tr>
+                            </thead>
+                            <tbody id="anomaly-body">
+                                <tr><td colspan="10" class="empty-msg">Yükleniyor...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
 
-        <div class="table-wrap">
-            <table id="upcoming-table">
-                <thead>
-                    <tr>
-                        <th class="col-check"><input type="checkbox" id="select-all-upcoming"></th>
-                        <th class="sortable" data-sort="match">Maç</th>
-                        <th class="sortable" data-sort="start">Başlangıç</th>
-                        <th class="sortable" data-sort="league">Lig</th>
-                        <th class="sortable" data-sort="round">Tur</th>
-                        <th class="sortable" data-sort="status">Durum</th>
-                        <th>İşlemler</th>
-                    </tr>
-                </thead>
-                <tbody id="upcoming-body">
-                    <tr><td colspan="7" class="empty-msg">Yükleniyor...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
+                <section id="tab-analyses" class="tab-content">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <input type="text" id="search-analyses" class="input-search" placeholder="Analiz metninde ara">
+                            <button id="btn-refresh-analyses" class="btn btn-secondary">Listeyi Yenile</button>
+                        </div>
 
-    <!-- AI ANALYSIS MODAL -->
+                        <div class="toolbar-right">
+                            <button id="btn-clear-all-analyses" class="btn btn-ghost-danger">Analiz Geçmişini Sil</button>
+                            <span id="selected-count-analyses" class="selected-count">0 seçili</span>
+                            <button id="btn-delete-analyses" class="btn btn-danger" disabled>Seçilileri Sil</button>
+                        </div>
+                    </div>
+
+                    <div id="analyses-list" class="analyses-list">
+                        <div class="empty-msg">Yükleniyor...</div>
+                    </div>
+                </section>
+
+                <section id="tab-upcoming" class="tab-content">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <select id="filter-upcoming-status" class="input-select">
+                                <option value="">Tüm Durumlar</option>
+                                <option value="new">Yeni</option>
+                                <option value="following">Takip Ediliyor</option>
+                                <option value="ignored">Gözardı Edildi</option>
+                            </select>
+                            <input type="text" id="search-upcoming" class="input-search" placeholder="Takım, lig veya tur ara">
+                            <button id="btn-refresh-upcoming" class="btn btn-secondary">Listeyi Yenile</button>
+                            <button id="btn-trigger-upcoming" class="btn btn-secondary" title="Yaklaşan maçları şimdi çek">Maçları Çek</button>
+                            <button id="btn-ai-analysis" class="btn btn-ai" title="Yapay zeka analizi">Son Analizi Aç</button>
+                        </div>
+
+                        <div class="toolbar-right">
+                            <button id="btn-clear-all-upcoming" class="btn btn-ghost-danger">Maç Kayıtlarını Sil</button>
+                            <span id="selected-count-upcoming" class="selected-count">0 seçili</span>
+                            <button id="btn-bulk-follow-upcoming" class="btn btn-action" disabled>Takip Et</button>
+                            <button id="btn-bulk-ignore-upcoming" class="btn btn-action" disabled>Gözardı Et</button>
+                            <button id="btn-bulk-delete-upcoming" class="btn btn-danger" disabled>Seçilileri Sil</button>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table id="upcoming-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"><input type="checkbox" id="select-all-upcoming"></th>
+                                    <th class="sortable" data-sort="match">Maç</th>
+                                    <th class="sortable" data-sort="start">Başlangıç</th>
+                                    <th class="sortable" data-sort="league">Lig</th>
+                                    <th class="sortable" data-sort="round">Tur</th>
+                                    <th class="sortable" data-sort="status">Durum</th>
+                                    <th>İşlemler</th>
+                                </tr>
+                            </thead>
+                            <tbody id="upcoming-body">
+                                <tr><td colspan="7" class="empty-msg">Yükleniyor...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
     <div id="ai-modal" class="modal-overlay" style="display:none;">
         <div class="modal">
             <div class="modal-header">
-                <h2>🤖 Yapay Zeka Maç Analizi</h2>
-                <button id="modal-close" class="modal-close-btn">&times;</button>
+                <h2>Yapay Zeka Maç Analizi</h2>
+                <button id="modal-close" class="modal-close-btn" aria-label="Kapat">&times;</button>
             </div>
             <div id="modal-meta" class="modal-meta"></div>
             <div id="modal-body" class="modal-body">Yükleniyor...</div>

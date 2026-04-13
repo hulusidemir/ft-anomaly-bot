@@ -20,6 +20,7 @@ from db import (
     get_analyses, delete_analyses, clear_analyses,
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
+    clear_database,
 )
 from workers import live_scan, upcoming_scan
 from scraper import scraper
@@ -234,6 +235,12 @@ async def api_delete_upcoming(request: Request):
 @app.post("/api/upcoming/clear")
 async def api_clear_upcoming():
     await clear_upcoming_matches()
+    return {"ok": True}
+
+
+@app.post("/api/database/clear")
+async def api_clear_database():
+    await clear_database()
     return {"ok": True}
 
 
