@@ -3,18 +3,29 @@ import random
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 
 from curl_cffi.requests import AsyncSession
 from config import SOFASCORE_BASE, TZ_TURKEY
 
 logger = logging.getLogger(__name__)
 
-# Impersonation targets for curl_cffi (rotated on 403)
+# Modern browser impersonation targets (rotated on bot-protection hits)
 IMPERSONATE_TARGETS = [
     "chrome131", "chrome124", "chrome123", "chrome120",
-    "safari17_0", "safari15_5", "edge101",
+    "safari17_0", "safari17_2_ios", "edge101",
 ]
+
+ACCEPT_LANGUAGES = [
+    "en-US,en;q=0.9",
+    "en-US,en;q=0.9,tr;q=0.8",
+    "tr-TR,tr;q=0.9,en;q=0.8",
+    "en-GB,en;q=0.9,tr;q=0.7",
+]
+
+SOFASCORE_WEB = "https://www.sofascore.com"
+# Endpoints that should never legitimately 404 – treat 404 on these as bot-protection masking.
+LIST_ENDPOINTS = ("/events/live", "/scheduled-events/")
 
 
 @dataclass
@@ -73,81 +84,196 @@ class UpcomingMatch:
 
 
 class SofascoreScraper:
+    # Concurrency: keep it low – a real browser never fires dozens of parallel XHRs.
+    MAX_CONCURRENT_REQUESTS = 2
+    # Jittered gap between any two requests (seconds).
+    MIN_GAP_RANGE = (1.8, 3.6)
+    # Re-warm session if older than this (seconds).
+    WARMUP_TTL = 900
+
     def __init__(self):
         self._session: AsyncSession | None = None
         self._rate_lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
         self._last_request_time = 0.0
+        self._last_rotate_time = 0.0
         self._impersonate = random.choice(IMPERSONATE_TARGETS)
+        self._accept_lang = random.choice(ACCEPT_LANGUAGES)
+        self._session_warm_at = 0.0
+        self._consecutive_bot_errors = 0
+
+    def _build_session(self) -> AsyncSession:
+        # NOTE: do NOT set Sec-Fetch-* / Sec-Ch-Ua-* manually – curl_cffi's
+        # impersonate profile sets them together with the matching TLS/JA3
+        # fingerprint. Overriding piecemeal creates inconsistency that the
+        # WAF detects. We only set app-level headers here.
+        return AsyncSession(
+            impersonate=self._impersonate,
+            headers={
+                "Accept": "*/*",
+                "Accept-Language": self._accept_lang,
+                "Referer": f"{SOFASCORE_WEB}/",
+                "Origin": SOFASCORE_WEB,
+            },
+            timeout=20,
+        )
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession(
-                impersonate=self._impersonate,
-                headers={
-                    "Accept": "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9,tr;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Referer": "https://www.sofascore.com/",
-                    "Origin": "https://www.sofascore.com",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "same-site",
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"Windows"',
-                },
-                timeout=15,
-            )
+            self._session = self._build_session()
+            self._session_warm_at = 0.0
         return self._session
 
-    async def _fetch_json(self, url: str, retries: int = 5) -> dict | None:
-        for attempt in range(retries):
-            try:
-                async with self._rate_lock:
-                    # Enforce minimum delay between requests
-                    elapsed = time.monotonic() - self._last_request_time
-                    min_delay = random.uniform(1.5, 3.5)
-                    if elapsed < min_delay:
-                        await asyncio.sleep(min_delay - elapsed)
-                    session = await self._get_session()
-                    self._last_request_time = time.monotonic()
-                    resp = await session.get(url)
-            except Exception as e:
-                logger.warning(f"Request error on {url}: {e}")
-                await self._rotate_session()
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
+    async def _warm_session(self) -> None:
+        """Visit the Sofascore homepage once to bootstrap Cloudflare cookies.
 
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 429:
-                wait = (2 ** attempt) * 5 + random.uniform(1, 3)
+        Without this, the very first API call on a fresh session has no
+        cf_clearance/__cf_bm cookie and is far more likely to be challenged.
+        """
+        now = time.monotonic()
+        if self._session_warm_at and (now - self._session_warm_at) < self.WARMUP_TTL:
+            return
+        try:
+            sess = await self._get_session()
+            resp = await sess.get(SOFASCORE_WEB, timeout=15)
+            if resp.status_code in (200, 304):
+                self._session_warm_at = time.monotonic()
+                # Small human-like pause before issuing the first XHR
+                await asyncio.sleep(random.uniform(0.8, 2.0))
+                logger.debug("Session warmed (impersonate=%s)", self._impersonate)
+            else:
+                logger.warning(f"Warm-up unexpected status {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Session warm-up failed: {e}")
+
+    async def _throttle(self) -> None:
+        async with self._rate_lock:
+            elapsed = time.monotonic() - self._last_request_time
+            min_delay = random.uniform(*self.MIN_GAP_RANGE)
+            if elapsed < min_delay:
+                await asyncio.sleep(min_delay - elapsed)
+            self._last_request_time = time.monotonic()
+
+    async def _rotate_session(self) -> None:
+        """Drop the current session, pick a different impersonation, and force re-warm.
+
+        Kept behind a 5s cool-down so a burst of errors doesn't rotate many
+        times in a row (which itself looks bot-like and depletes our IP budget).
+        """
+        elapsed = time.monotonic() - self._last_rotate_time
+        if elapsed < 5:
+            await asyncio.sleep(5 - elapsed)
+        self._last_rotate_time = time.monotonic()
+
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
+
+        others = [t for t in IMPERSONATE_TARGETS if t != self._impersonate]
+        if others:
+            self._impersonate = random.choice(others)
+        self._accept_lang = random.choice(ACCEPT_LANGUAGES)
+        self._session_warm_at = 0.0
+        self._consecutive_bot_errors = 0
+        logger.info("Rotated scraper session – new impersonate=%s", self._impersonate)
+
+    def _is_list_endpoint(self, url: str) -> bool:
+        return any(marker in url for marker in LIST_ENDPOINTS)
+
+    async def _fetch_json(self, url: str, retries: int = 5) -> dict | None:
+        """Fetch JSON with bot-protection-aware retry logic.
+
+        Handling strategy:
+          * 200            → return JSON
+          * 403 / 429      → always bot-protection: rotate + backoff
+          * 404 on a list  → treat as bot-protection masking: rotate + retry
+          * 404 on detail  → legit "no data" on first attempt; only rotate on
+                             repeated bursts (tracked via _consecutive_bot_errors)
+          * 5xx            → transient: backoff, no rotation
+        """
+        list_endpoint = self._is_list_endpoint(url)
+
+        for attempt in range(retries):
+            await self._warm_session()
+            async with self._semaphore:
+                await self._throttle()
+                try:
+                    session = await self._get_session()
+                    resp = await session.get(url)
+                except Exception as e:
+                    logger.warning(f"Request error on {url}: {e}")
+                    await self._rotate_session()
+                    await asyncio.sleep(2 * (attempt + 1) + random.uniform(0.5, 2.0))
+                    continue
+
+            status = resp.status_code
+
+            if status == 200:
+                self._consecutive_bot_errors = 0
+                try:
+                    return resp.json()
+                except Exception:
+                    logger.warning(f"Non-JSON 200 from {url}")
+                    return None
+
+            if status == 429:
+                self._consecutive_bot_errors += 1
+                wait = (2 ** attempt) * 5 + random.uniform(2, 6)
                 logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
-            elif resp.status_code == 403:
-                wait = (2 ** attempt) * 3 + random.uniform(2, 5)
-                logger.warning(f"Forbidden (403) on {url}, attempt {attempt+1}/{retries}, rotating session")
+                if attempt >= 1:
+                    await self._rotate_session()
+                continue
+
+            if status == 403:
+                self._consecutive_bot_errors += 1
+                wait = (2 ** attempt) * 3 + random.uniform(3, 7)
+                logger.warning(f"Forbidden (403) on {url} – rotating session")
                 await self._rotate_session()
                 await asyncio.sleep(wait)
-            elif resp.status_code >= 500:
-                wait = (2 ** attempt) * 2 + random.uniform(1, 2)
-                logger.warning(f"Server error ({resp.status_code}) on {url}, retrying in {wait:.1f}s")
-                await asyncio.sleep(wait)
-            else:
-                logger.warning(f"HTTP {resp.status_code} on {url}")
-                return None
-        return None
+                continue
 
-    async def _rotate_session(self):
-        """Close current session and create a new one with different impersonation."""
-        if self._session:
-            await self._session.close()
-            self._session = None
-        # Pick a different target than the current one
-        others = [t for t in IMPERSONATE_TARGETS if t != self._impersonate]
-        self._impersonate = random.choice(others) if others else self._impersonate
-        logger.debug(f"Rotated to impersonate: {self._impersonate}")
+            if status == 404:
+                # On list endpoints, 404 is never legit – always bot-protection masking.
+                # On detail endpoints, a single 404 is usually legit (no stats yet).
+                if list_endpoint:
+                    self._consecutive_bot_errors += 1
+                    wait = (2 ** attempt) * 3 + random.uniform(2, 5)
+                    logger.warning(
+                        f"404 on list endpoint {url} – treating as bot-protection, "
+                        f"rotating and retrying in {wait:.1f}s"
+                    )
+                    await self._rotate_session()
+                    await asyncio.sleep(wait)
+                    continue
+
+                # Detail endpoint 404 – accept unless we're seeing a burst.
+                if self._consecutive_bot_errors >= 3 and attempt == 0:
+                    logger.warning(
+                        f"404 on {url} during 404-burst (count={self._consecutive_bot_errors})"
+                        f" – rotating before giving up"
+                    )
+                    await self._rotate_session()
+                    await asyncio.sleep(random.uniform(2, 4))
+                    self._consecutive_bot_errors = 0
+                    continue
+                self._consecutive_bot_errors += 1
+                logger.debug(f"404 on {url} (likely no data)")
+                return None
+
+            if status >= 500:
+                wait = (2 ** attempt) * 2 + random.uniform(1, 2)
+                logger.warning(f"Server error ({status}) on {url}, retrying in {wait:.1f}s")
+                await asyncio.sleep(wait)
+                continue
+
+            logger.warning(f"HTTP {status} on {url}")
+            return None
+
+        return None
 
     def _parse_minute(self, event: dict) -> int:
         """Extract current match minute from event data.
@@ -187,10 +313,13 @@ class SofascoreScraper:
             except (ValueError, IndexError):
                 pass
 
-        # Last resort: estimate from startTimestamp
+        # Last resort: estimate from startTimestamp (accounts for HT break).
         start_ts = event.get("startTimestamp", 0)
         if start_ts and start_ts > 0:
             elapsed_min = (now - start_ts) // 60
+            # Subtract half-time break (15 min) if we're past 45 mins elapsed.
+            if elapsed_min > 45:
+                elapsed_min -= 15
             return max(0, min(int(elapsed_min), 130))
 
         return 0

@@ -188,28 +188,42 @@ async def ask_gemini(prompt: str) -> str | None:
 
 
 def build_gemini_prompt(matches_text: str) -> str:
-    """Build the analysis prompt for Gemini."""
-    return f"""Sen 20+ yıllık deneyime sahip profesyonel bir futbol bahis analisti ve eski futbol menajerisin.
+    """Build the analysis prompt for Gemini.
 
-Aşağıdaki bugünün yaklaşan futbol maçlarını analiz et. Seçtiğin her maç için:
+    Note: this model has no live web access; any "form", "injury" or
+    "league standing" claim is from pre-training memory and therefore
+    stale. The prompt forces the model to state its uncertainty explicitly
+    and to downgrade confidence when data is unavailable, so users do not
+    mistake hallucination for insight.
+    """
+    return f"""Sen 20+ yıllık deneyime sahip profesyonel bir futbol bahis analistisin.
 
-1. Takımların son form durumunu araştır (son 5 maç).
-2. Motivasyon faktörlerini değerlendir: şampiyonluk, düşme hattı, Avrupa bileti vb. için kazanma ihtiyacı var mı?
-3. Muhtemel sakatlık, cezalı oyuncular ve rotasyon etkisini dikkate al.
-4. Cazip görünen ama riskli "tuzak" maçları tespit et.
-5. Oranların takımı küçümsediği yüksek değerli fırsatları belirle.
+ÖNEMLİ VERİ UYARISI:
+- Gerçek zamanlı internet erişimin YOK. Takım formları, sakatlıklar,
+  lig sıralamaları hakkında sahip olduğun bilgiler eğitim kesim tarihine
+  ait ve GÜNCEL OLMAYABİLİR.
+- Bir takım/lig hakkında yeterli ve güncel bilgin yoksa, o maç için
+  "Yetersiz veri — yorum yok" de ve atla. UYDURMA.
 
-KURALLAR:
-- Sadece YÜKSEK GÜVEN duyduğun maçları öner.
-- Tüm riskli/tuzak maçları önerilerin dışında bırak.
-- Her önerilen maç için şunları ver:
-    * Tahmin edilen sonuç (1X2, 2.5 Üst/Alt, KG Var/Yok vb.)
-    * Güven seviyesi (Yüksek/Çok Yüksek)
-    * Kısa gerekçe (2-3 cümle)
-- Metni Telegram için temiz ve okunaklı biçimlendir (uygun emoji kullan).
-- Cevabı Türkçe yaz.
+Aşağıdaki yaklaşan futbol maçlarını analiz et. Her seçtiğin maç için:
+
+1. Takımların son form durumu (eğer güvenilir bilgin varsa).
+2. Motivasyon: şampiyonluk, düşme hattı, Avrupa kupası yarışı etkisi.
+3. Olası sakatlık/cezalı etkisi (eğer bilgin varsa; yoksa belirtme).
+4. "Tuzak" maçları tespit et ve önerilerin dışında tut.
+5. Kesinlikle yüksek güven duymadığın hiçbir maçı ÖNERME.
+
+ÇIKTI KURALLARI:
+- Sadece YÜKSEK veya ÇOK YÜKSEK güvenli maçlar.
+- Her önerilen maç için:
+    * Tahmin (1X2, 2.5 Üst/Alt, KG Var/Yok vb.)
+    * Güven seviyesi (Yüksek / Çok Yüksek)
+    * 2-3 cümle gerekçe
+    * Gerekçede varsayım varsa açıkça belirt ("bilinen son form itibarıyla...")
+- Telegram için temiz biçim (uygun emoji). Türkçe yaz.
+- Güvenli hiçbir öneri yoksa: "Bugün güvenli önerilecek maç bulunmuyor." de.
 
 BUGÜNÜN MAÇLARI:
 {matches_text}
 
-Aşağıda profesyonel analizini paylaş:"""
+Profesyonel analizini paylaş:"""

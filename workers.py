@@ -6,7 +6,7 @@ Background workers:
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from scraper import scraper, UpcomingMatch
 from collections import defaultdict
@@ -46,9 +46,13 @@ async def live_scan():
                     f"distribution: {sorted(set(minutes))[:10]}"
                 )
 
-            # Filter: only 20-80 minutes
-            eligible = [m for m in matches if 20 <= m.minute <= 80]
-            logger.info(f"Eligible matches (20-80 min): {len(eligible)}")
+            # Filter: 30-85 min window.
+            # Lower bound 30: stats are too sparse before ~30' for reliable
+            #   ratio-based rules (cold starts, tactical probing).
+            # Upper bound 85: catch late drama that 80 missed, but clip stoppage
+            #   noise (90+) that rarely has room for follow-through.
+            eligible = [m for m in matches if 30 <= m.minute <= 85]
+            logger.info(f"Eligible matches (30-85 min): {len(eligible)}")
 
             if not eligible:
                 return
@@ -63,6 +67,7 @@ async def live_scan():
             logger.info(f"Stats fetched: {stats_ok}/{len(eligible)} successful")
 
             anomaly_count = 0
+            anomaly_event_ids: set[str] = set()
             for match, stats_result in zip(eligible, stats_results):
                 if isinstance(stats_result, Exception) or stats_result is None:
                     logger.debug(
@@ -72,6 +77,8 @@ async def live_scan():
                     continue
 
                 anomalies = detect_anomalies(match, stats_result)
+                if anomalies:
+                    anomaly_event_ids.add(match.event_id)
                 for condition_type, rules in anomalies:
                     stats_dict = stats_result.to_dict()
                     row_id, is_new, alert_number = await insert_anomaly(
@@ -108,15 +115,15 @@ async def live_scan():
 
             if anomaly_count > 0:
                 logger.info(f"Detected {anomaly_count} new anomalies")
-                # Mark these matches in the upcoming_matches table
-                anomaly_event_ids = list({
-                    m.event_id for m, s in zip(eligible, stats_results)
-                    if s is not None and not isinstance(s, Exception)
-                    and detect_anomalies(m, s)
-                })
                 if anomaly_event_ids:
-                    scan_date = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
-                    await mark_upcoming_anomaly(anomaly_event_ids, scan_date)
+                    # Mark the match both under today's and yesterday's scan_date
+                    # so late-night kick-offs that span midnight still get tagged.
+                    now_tr = datetime.now(TZ_TURKEY)
+                    today = now_tr.strftime("%Y-%m-%d")
+                    yesterday = (now_tr - timedelta(days=1)).strftime("%Y-%m-%d")
+                    ids = list(anomaly_event_ids)
+                    await mark_upcoming_anomaly(ids, today)
+                    await mark_upcoming_anomaly(ids, yesterday)
             else:
                 logger.debug("No new anomalies found")
 
