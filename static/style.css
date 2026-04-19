@@ -116,8 +116,9 @@ select {
 .dashboard-shell {
     position: relative;
     z-index: 1;
-    max-width: 1440px;
-    margin: 0 auto;
+    width: 100%;
+    max-width: none;
+    margin: 0;
     padding: 40px 28px 56px;
 }
 
@@ -718,10 +719,13 @@ input[type="checkbox"]:checked::before {
 }
 
 .match-link {
+    display: inline-block;
     color: var(--text);
     text-decoration: none;
     font-weight: 700;
     line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .match-link:hover {
@@ -988,8 +992,10 @@ tr.anomaly-row td {
 }
 
 .modal {
+    display: flex;
+    flex-direction: column;
     width: min(920px, 100%);
-    max-height: 88vh;
+    max-height: min(88vh, 900px);
     border-radius: 28px;
     overflow: hidden;
     background:
@@ -1023,21 +1029,26 @@ tr.anomaly-row td {
 }
 
 .modal-meta {
+    flex-shrink: 0;
     padding: 18px 26px 0;
     color: var(--accent);
     line-height: 1.6;
 }
 
 .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
     padding: 20px 26px 28px;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     color: var(--text-soft);
     white-space: pre-wrap;
     line-height: 1.8;
 }
 
 .dashboard-shell-compact {
-    max-width: 1500px;
+    max-width: none;
     padding-top: 24px;
 }
 
@@ -1145,6 +1156,64 @@ tr.anomaly-row td {
     border-radius: 26px;
 }
 
+#anomaly-table {
+    min-width: 1460px;
+}
+
+#upcoming-table {
+    min-width: 1180px;
+}
+
+#anomaly-table th:nth-child(2),
+#anomaly-table td:nth-child(2) {
+    min-width: 300px;
+}
+
+#anomaly-table th:nth-child(5),
+#anomaly-table td:nth-child(5) {
+    min-width: 180px;
+}
+
+#anomaly-table th:nth-child(7),
+#anomaly-table td:nth-child(7) {
+    min-width: 260px;
+}
+
+#anomaly-table th:last-child,
+#anomaly-table td:last-child {
+    min-width: 170px;
+}
+
+#upcoming-table th:nth-child(2),
+#upcoming-table td:nth-child(2) {
+    min-width: 340px;
+}
+
+#upcoming-table th:nth-child(3),
+#upcoming-table td:nth-child(3) {
+    min-width: 130px;
+}
+
+#upcoming-table th:nth-child(4),
+#upcoming-table td:nth-child(4) {
+    min-width: 220px;
+}
+
+#upcoming-table th:nth-child(5),
+#upcoming-table td:nth-child(5) {
+    min-width: 160px;
+}
+
+#upcoming-table th:nth-child(6),
+#upcoming-table td:nth-child(6) {
+    min-width: 170px;
+}
+
+#upcoming-table th:last-child,
+#upcoming-table td:last-child {
+    min-width: 150px;
+}
+
 .tab-header-row {
     display: flex;
     align-items: center;
@@ -1210,6 +1279,15 @@ tr.anomaly-row td {
 @media (max-width: 760px) {
     .dashboard-shell {
         padding: 22px 14px 40px;
+    }
+
+    .modal-overlay {
+        padding: 12px;
+    }
+
+    .modal {
+        max-height: calc(100vh - 24px);
+        border-radius: 22px;
     }
 
     .dashboard-shell-compact {

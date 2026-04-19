@@ -520,13 +520,7 @@ async function loadUpcoming() {
     touchLastUpdated();
 }
 
-function renderUpcoming() {
-    const tbody = $('#upcoming-body');
-    const selectAll = $('#select-all-upcoming');
-    selectedUpcoming.clear();
-    if (selectAll) selectAll.checked = false;
-    updateUpcomingBulk();
-
+function getVisibleUpcomingMatches() {
     const searchQuery = ($('#search-upcoming') || {}).value || '';
     let filtered = filterBySearch(upcomingMatches, searchQuery, (item) =>
         `${item.home_team} ${item.away_team} ${item.league} ${item.round_info || ''}`
@@ -548,6 +542,18 @@ function renderUpcoming() {
                 return '';
         }
     });
+
+    return filtered;
+}
+
+function renderUpcoming() {
+    const tbody = $('#upcoming-body');
+    const selectAll = $('#select-all-upcoming');
+    selectedUpcoming.clear();
+    if (selectAll) selectAll.checked = false;
+    updateUpcomingBulk();
+
+    const filtered = getVisibleUpcomingMatches();
 
     if (!filtered.length) {
         tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Yaklaşan maç bulunamadı</td></tr>';
@@ -596,6 +602,39 @@ function renderUpcoming() {
             updateUpcomingBulk();
         });
     });
+}
+
+async function copyUpcomingMatches() {
+    const filtered = getVisibleUpcomingMatches();
+    if (!filtered.length) {
+        toast('Kopyalanacak yaklaşan maç bulunamadı', true);
+        return;
+    }
+
+    const text = filtered.map((item) => {
+        const matchName = `${item.home_team} vs ${item.away_team}`;
+        return `${formatStartTime(item.start_time, item.scan_date)} - ${matchName}`;
+    }).join('\n');
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            textarea.remove();
+        }
+
+        toast(`${filtered.length} maç kopyalandı`);
+    } catch (error) {
+        toast(`Kopyalama başarısız: ${error.message}`, true);
+    }
 }
 
 function upcomingStatusLabel(status) {
@@ -684,6 +723,7 @@ $('#btn-clear-all-upcoming').addEventListener('click', async () => {
 $('#filter-upcoming-status').addEventListener('change', loadUpcoming);
 $('#btn-refresh-upcoming').addEventListener('click', loadUpcoming);
 $('#search-upcoming').addEventListener('input', renderUpcoming);
+$('#btn-copy-upcoming').addEventListener('click', copyUpcomingMatches);
 
 $('#btn-trigger-upcoming').addEventListener('click', async () => {
     const button = $('#btn-trigger-upcoming');
