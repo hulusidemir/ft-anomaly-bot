@@ -983,6 +983,11 @@ tr.anomaly-row td {
     background: linear-gradient(90deg, rgba(255, 106, 115, 0.12), transparent 34%);
 }
 
+tr.state-following.anomaly-row td,
+tbody tr.state-following.anomaly-row:hover td {
+    background: #102f2a;
+}
+
 .empty-msg {
     padding: 88px 0;
     text-align: center;
