@@ -918,7 +918,7 @@ input[type="checkbox"]:checked::before {
 .icon-btn-follow.active {
     color: #08111f;
     border-color: transparent;
-    background-color: #f7c35f;
+    background: linear-gradient(135deg, var(--teal), #8af0e0);
     box-shadow: 0 6px 18px rgba(68, 212, 200, 0.28);
 }
 
@@ -962,7 +962,7 @@ tr.state-ignored {
 }
 
 tr.state-following td {
-    background: linear-gradient(90deg, rgba(49, 208, 164, 0.12), transparent 30%);
+    background-color: #eed9bb;
 }
 
 tr.anomaly-row td {
