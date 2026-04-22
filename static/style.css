@@ -964,7 +964,8 @@ tr.state-ignored {
 tr.state-following td {
     background-color: #03463c;
 }
-tr.state-following:hover {
+
+tbody tr.state-following:hover td {
     background-color: #03463c;
 }
 
