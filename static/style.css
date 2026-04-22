@@ -921,12 +921,6 @@ input[type="checkbox"]:checked::before {
     background: linear-gradient(135deg, var(--teal), #8af0e0);
     box-shadow: 0 6px 18px rgba(68, 212, 200, 0.28);
 }
-.icon-btn-follow.active.hover {
-    color: #08111f;
-    border-color: transparent;
-    background: linear-gradient(135deg, var(--teal), #8af0e0);
-    box-shadow: 0 6px 18px rgba(68, 212, 200, 0.28);
-}
 
 .icon-btn-delete,
 .icon-btn-purge {
@@ -968,6 +962,9 @@ tr.state-ignored {
 }
 
 tr.state-following td {
+    background-color: #03463c;
+}
+tr.state-following td:hover {
     background-color: #03463c;
 }
 
