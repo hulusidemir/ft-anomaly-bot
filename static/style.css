@@ -864,6 +864,12 @@ input[type="checkbox"]:checked::before {
     background: linear-gradient(135deg, var(--teal), #8af0e0);
 }
 
+.row-btn-follow.active {
+    color: #d8fff4;
+    border-color: rgba(70, 157, 127, 0.5);
+    background: linear-gradient(135deg, #0f3e35, #145846);
+}
+
 .row-actions-icons {
     gap: 6px;
     flex-wrap: nowrap;
@@ -916,10 +922,10 @@ input[type="checkbox"]:checked::before {
 }
 
 .icon-btn-follow.active {
-    color: #08111f;
-    border-color: transparent;
-    background: linear-gradient(135deg, var(--teal), #8af0e0);
-    box-shadow: 0 6px 18px rgba(68, 212, 200, 0.28);
+    color: #d8fff4;
+    border-color: rgba(70, 157, 127, 0.5);
+    background: linear-gradient(135deg, #0f3e35, #145846);
+    box-shadow: 0 6px 18px rgba(20, 88, 70, 0.24);
 }
 
 .icon-btn-delete,
@@ -949,24 +955,28 @@ input[type="checkbox"]:checked::before {
 }
 
 tr.state-bet_placed {
-    opacity: 0.44;
+    opacity: 0.62;
 }
 
 tr.state-bet_placed td:not(.col-check):not(:last-child) {
-    text-decoration: line-through;
-    color: var(--text-muted);
+    color: rgba(247, 195, 95, 0.62);
 }
 
 tr.state-ignored {
     opacity: 0.36;
 }
 
+tr.state-ignored td:not(.col-check):not(:last-child) {
+    text-decoration: line-through;
+    color: var(--text-muted);
+}
+
 tr.state-following td {
-    background-color: #03463c;
+    background-color: #102f2a;
 }
 
 tbody tr.state-following:hover td {
-    background-color: #03463c;
+    background-color: #102f2a;
 }
 
 tr.anomaly-row td {

@@ -629,7 +629,7 @@ function renderUpcoming() {
             </td>
             <td>
                 <div class="row-actions">
-                    <button class="row-btn${item.status === 'following' ? ' active' : ''}" onclick="setUpcomingStatus(${item.id}, 'following')">Takip</button>
+                    <button class="row-btn row-btn-follow${item.status === 'following' ? ' active' : ''}" onclick="setUpcomingStatus(${item.id}, 'following')">Takip</button>
                     <button class="row-btn${item.status === 'ignored' ? ' active' : ''}" onclick="setUpcomingStatus(${item.id}, 'ignored')">Gözardı</button>
                 </div>
             </td>
