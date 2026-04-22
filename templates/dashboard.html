@@ -34,6 +34,7 @@
                     <button class="tab active" data-tab="anomalies">Anomaliler</button>
                     <button class="tab" data-tab="analyses">Maç Analizleri</button>
                     <button class="tab" data-tab="upcoming">Yaklaşan Maçlar</button>
+                    <button class="tab" data-tab="deleted">Silinen Maçlar</button>
                 </nav>
 
                 <section id="tab-anomalies" class="tab-content active">
@@ -142,6 +143,42 @@
                             </thead>
                             <tbody id="upcoming-body">
                                 <tr><td colspan="7" class="empty-msg">Yükleniyor...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="tab-deleted" class="tab-content">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <input type="text" id="search-deleted" class="input-search" placeholder="Takım, lig veya koşul ara">
+                            <button id="btn-refresh-deleted" class="btn btn-secondary">Listeyi Yenile</button>
+                        </div>
+
+                        <div class="toolbar-right">
+                            <button id="btn-purge-all-deleted" class="btn btn-ghost-danger">Çöpü Kalıcı Boşalt</button>
+                            <span id="selected-count-deleted" class="selected-count">0 seçili</span>
+                            <button id="btn-bulk-restore-deleted" class="btn btn-action" disabled>Geri Yükle</button>
+                            <button id="btn-bulk-purge-deleted" class="btn btn-danger" disabled>Kalıcı Sil</button>
+                        </div>
+                    </div>
+
+                    <div class="table-wrap">
+                        <table id="deleted-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-check"><input type="checkbox" id="select-all-deleted"></th>
+                                    <th>Maç</th>
+                                    <th>Skor</th>
+                                    <th>Dakika</th>
+                                    <th>Lig</th>
+                                    <th>Koşul</th>
+                                    <th>Silinme</th>
+                                    <th>İşlemler</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deleted-body">
+                                <tr><td colspan="8" class="empty-msg">Yükleniyor...</td></tr>
                             </tbody>
                         </table>
                     </div>

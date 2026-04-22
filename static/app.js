@@ -6,6 +6,10 @@ const API = {
     bulkStatus: '/api/anomalies/bulk-status',
     deleteAnomalies: '/api/anomalies/delete',
     clearAnomalies: '/api/anomalies/clear',
+    deletedAnomalies: '/api/anomalies/deleted',
+    restoreAnomalies: '/api/anomalies/restore',
+    purgeAnomalies: '/api/anomalies/purge',
+    purgeAllAnomalies: '/api/anomalies/purge-all',
     analyses: '/api/analyses',
     deleteAnalyses: '/api/analyses/delete',
     clearAnalyses: '/api/analyses/clear',
@@ -20,14 +24,25 @@ const API = {
     triggerUpcoming: '/api/trigger/upcoming-scan',
 };
 
+const ICONS = {
+    bet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+    ignore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>',
+    follow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
+    delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
+    restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
+    purge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+};
+
 let anomalies = [];
 let analyses = [];
 let upcomingMatches = [];
+let deletedAnomalies = [];
 let schedulerJobs = [];
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
 const selectedUpcoming = new Set();
+const selectedDeleted = new Set();
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -48,6 +63,7 @@ $$('.tab').forEach((tab) => {
         $$('.tab-content').forEach((item) => item.classList.remove('active'));
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
+        if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
     });
 });
 
@@ -332,10 +348,11 @@ function renderAnomalies() {
             <td>${alertBadge}</td>
             <td><span class="time-pill">${time}</span></td>
             <td>
-                <div class="row-actions">
-                    <button class="row-btn${item.status === 'bet_placed' ? ' active' : ''}" onclick="setStatus(${item.id}, 'bet_placed')">Bahis</button>
-                    <button class="row-btn${item.status === 'ignored' ? ' active' : ''}" onclick="setStatus(${item.id}, 'ignored')">Gözardı</button>
-                    <button class="row-btn${item.status === 'following' ? ' active' : ''}" onclick="setStatus(${item.id}, 'following')">Takip</button>
+                <div class="row-actions row-actions-icons">
+                    <button class="icon-btn icon-btn-bet${item.status === 'bet_placed' ? ' active' : ''}" onclick="setStatus(${item.id}, 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
+                    <button class="icon-btn icon-btn-ignore${item.status === 'ignored' ? ' active' : ''}" onclick="setStatus(${item.id}, 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
+                    <button class="icon-btn icon-btn-follow${item.status === 'following' ? ' active' : ''}" onclick="setStatus(${item.id}, 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
+                    <button class="icon-btn icon-btn-delete" onclick="deleteAnomalyRow(${item.id})" title="Sil" aria-label="Sil">${ICONS.delete}</button>
                 </div>
             </td>
         </tr>`;
@@ -353,14 +370,39 @@ function renderAnomalies() {
 
 async function setStatus(id, status) {
     const anomaly = anomalies.find((item) => item.id === id);
-    const newStatus = anomaly && anomaly.status === status ? 'new' : status;
-    const result = await apiPost(API.updateStatus(id), { status: newStatus });
+    if (!anomaly) return;
+
+    const newStatus = anomaly.status === status ? 'new' : status;
+    const siblings = anomalies.filter((item) => item.match_id === anomaly.match_id);
+    const ids = siblings.map((item) => item.id);
+
+    const result = ids.length > 1
+        ? await apiPost(API.bulkStatus, { ids, status: newStatus })
+        : await apiPost(API.updateStatus(id), { status: newStatus });
     if (!result || !result.ok) return;
 
-    if (anomaly) anomaly.status = newStatus;
+    siblings.forEach((item) => { item.status = newStatus; });
     renderAnomalies();
     updateOverview();
-    toast(`Durum güncellendi: ${statusLabel(newStatus)}`);
+    const extra = siblings.length > 1 ? ` (${siblings.length} sinyal)` : '';
+    toast(`Durum güncellendi: ${statusLabel(newStatus)}${extra}`);
+}
+
+async function deleteAnomalyRow(id) {
+    const anomaly = anomalies.find((item) => item.id === id);
+    if (!anomaly) return;
+
+    const siblings = anomalies.filter((item) => item.match_id === anomaly.match_id);
+    const ids = siblings.map((item) => item.id);
+    const extra = siblings.length > 1 ? ` (${siblings.length} sinyal)` : '';
+
+    if (!confirm(`${anomaly.home_team} vs ${anomaly.away_team} kaydı silinsin mi?${extra}\nSilinen Maçlar bölümüne taşınacak.`)) return;
+
+    const result = await apiPost(API.deleteAnomalies, { ids });
+    if (!result || !result.ok) return;
+
+    toast(`${ids.length} kayıt Silinen Maçlar'a taşındı`);
+    await loadAnomalies();
 }
 
 function updateBulkButtons() {
@@ -403,25 +445,25 @@ $('#btn-bulk-ignore').addEventListener('click', () => bulkStatus('ignored'));
 $('#btn-bulk-follow').addEventListener('click', () => bulkStatus('following'));
 
 $('#btn-bulk-delete').addEventListener('click', async () => {
-    if (!confirm(`${selectedAnomalies.size} anomali kaydı silinsin mi?`)) return;
+    if (!confirm(`${selectedAnomalies.size} anomali Silinen Maçlar bölümüne taşınsın mı?`)) return;
 
     const ids = [...selectedAnomalies];
     const result = await apiPost(API.deleteAnomalies, { ids });
     if (!result || !result.ok) return;
 
-    toast(`${ids.length} anomali silindi`);
+    toast(`${ids.length} kayıt Silinen Maçlar'a taşındı`);
     await loadAnomalies();
 });
 
 $('#btn-clear-all-anomalies').addEventListener('click', async () => {
-    if (!confirm('Tüm anomali geçmişi silinsin mi? Bu işlem geri alınamaz.')) return;
+    if (!confirm('Tüm anomaliler Silinen Maçlar bölümüne taşınsın mı?')) return;
 
     const ok = await clearAllWithFallback({
         clearUrl: API.clearAnomalies,
         deleteUrl: API.deleteAnomalies,
         ids: anomalies.map((item) => item.id),
-        emptyText: 'Silinecek anomali bulunamadı',
-        successText: 'Tüm anomali geçmişi silindi',
+        emptyText: 'Taşınacak anomali bulunamadı',
+        successText: 'Tüm anomaliler Silinen Maçlar\'a taşındı',
     });
 
     if (ok) await loadAnomalies();
@@ -740,6 +782,134 @@ $('#btn-trigger-upcoming').addEventListener('click', async () => {
     }, 10000);
 });
 
+async function loadDeletedAnomalies() {
+    const data = await apiFetch(API.deletedAnomalies);
+    if (!data) return;
+
+    deletedAnomalies = data;
+    renderDeletedAnomalies();
+    touchLastUpdated();
+}
+
+function renderDeletedAnomalies() {
+    const tbody = $('#deleted-body');
+    const selectAll = $('#select-all-deleted');
+    selectedDeleted.clear();
+    if (selectAll) selectAll.checked = false;
+    updateDeletedBulk();
+
+    const searchQuery = ($('#search-deleted') || {}).value || '';
+    const filtered = filterBySearch(deletedAnomalies, searchQuery, (item) =>
+        `${item.home_team} ${item.away_team} ${item.league} ${item.condition_type}`
+    );
+
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">Silinen kayıt yok</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = filtered.map((item) => {
+        const conditionBadge = item.condition_type === 'A'
+            ? '<span class="badge badge-a">A / Beraberlik</span>'
+            : '<span class="badge badge-b">B / 1 Fark</span>';
+        const deletedTime = formatCreatedAt(item.deleted_at, true);
+
+        return `
+        <tr data-id="${item.id}">
+            <td class="col-check"><input type="checkbox" class="chk-deleted" data-id="${item.id}"></td>
+            <td>
+                <div class="cell-stack">
+                    <a class="match-link" href="${sofascoreEventUrl(item.match_id)}" target="_blank" rel="noopener noreferrer">
+                        ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
+                    </a>
+                    <span class="cell-subtle">Maç ID: ${escHtml(item.match_id)}</span>
+                </div>
+            </td>
+            <td><span class="score-pill">${item.score_home} - ${item.score_away}</span></td>
+            <td><span class="table-tag">${item.minute}'</span></td>
+            <td>${escHtml(item.league || '-')}</td>
+            <td>${conditionBadge}</td>
+            <td><span class="time-pill">${deletedTime}</span></td>
+            <td>
+                <div class="row-actions row-actions-icons">
+                    <button class="icon-btn icon-btn-restore" onclick="restoreDeletedRow(${item.id})" title="Geri yükle" aria-label="Geri yükle">${ICONS.restore}</button>
+                    <button class="icon-btn icon-btn-purge" onclick="purgeDeletedRow(${item.id})" title="Kalıcı sil" aria-label="Kalıcı sil">${ICONS.purge}</button>
+                </div>
+            </td>
+        </tr>`;
+    }).join('');
+
+    $$('.chk-deleted').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+            const id = Number(checkbox.dataset.id);
+            if (checkbox.checked) selectedDeleted.add(id);
+            else selectedDeleted.delete(id);
+            updateDeletedBulk();
+        });
+    });
+}
+
+function updateDeletedBulk() {
+    const count = selectedDeleted.size;
+    $('#selected-count-deleted').textContent = `${count} seçili`;
+    $('#btn-bulk-restore-deleted').disabled = count === 0;
+    $('#btn-bulk-purge-deleted').disabled = count === 0;
+}
+
+async function restoreDeletedRow(id) {
+    const result = await apiPost(API.restoreAnomalies, { ids: [id] });
+    if (!result || !result.ok) return;
+    toast('Kayıt geri yüklendi');
+    await Promise.all([loadDeletedAnomalies(), loadAnomalies()]);
+}
+
+async function purgeDeletedRow(id) {
+    if (!confirm('Bu kayıt veritabanından kalıcı olarak silinsin mi?')) return;
+    const result = await apiPost(API.purgeAnomalies, { ids: [id] });
+    if (!result || !result.ok) return;
+    toast('Kayıt kalıcı olarak silindi');
+    await loadDeletedAnomalies();
+}
+
+$('#select-all-deleted').addEventListener('change', (event) => {
+    const checked = event.target.checked;
+    $$('.chk-deleted').forEach((checkbox) => {
+        checkbox.checked = checked;
+        const id = Number(checkbox.dataset.id);
+        if (checked) selectedDeleted.add(id);
+        else selectedDeleted.delete(id);
+    });
+    updateDeletedBulk();
+});
+
+$('#btn-refresh-deleted').addEventListener('click', loadDeletedAnomalies);
+$('#search-deleted').addEventListener('input', renderDeletedAnomalies);
+
+$('#btn-bulk-restore-deleted').addEventListener('click', async () => {
+    const ids = [...selectedDeleted];
+    const result = await apiPost(API.restoreAnomalies, { ids });
+    if (!result || !result.ok) return;
+    toast(`${ids.length} kayıt geri yüklendi`);
+    await Promise.all([loadDeletedAnomalies(), loadAnomalies()]);
+});
+
+$('#btn-bulk-purge-deleted').addEventListener('click', async () => {
+    if (!confirm(`${selectedDeleted.size} kayıt veritabanından kalıcı olarak silinsin mi?`)) return;
+    const ids = [...selectedDeleted];
+    const result = await apiPost(API.purgeAnomalies, { ids });
+    if (!result || !result.ok) return;
+    toast(`${ids.length} kayıt kalıcı olarak silindi`);
+    await loadDeletedAnomalies();
+});
+
+$('#btn-purge-all-deleted').addEventListener('click', async () => {
+    if (!confirm('Çöpteki tüm kayıtlar kalıcı olarak silinsin mi? Bu işlem geri alınamaz.')) return;
+    const result = await apiPost(API.purgeAllAnomalies, {});
+    if (!result || !result.ok) return;
+    toast('Çöp boşaltıldı');
+    await loadDeletedAnomalies();
+});
+
 $('#btn-refresh-all').addEventListener('click', async () => {
     const button = $('#btn-refresh-all');
     setButtonBusy(button, 'Yenileniyor...', 'Tümünü Yenile', true);
@@ -759,9 +929,11 @@ $('#btn-clear-database').addEventListener('click', async () => {
         anomalies = [];
         analyses = [];
         upcomingMatches = [];
+        deletedAnomalies = [];
         renderAnomalies();
         renderAnalyses();
         renderUpcoming();
+        renderDeletedAnomalies();
         updateOverview();
         touchLastUpdated();
         toast('Veritabanı temizlendi');

@@ -864,6 +864,90 @@ input[type="checkbox"]:checked::before {
     background: linear-gradient(135deg, var(--teal), #8af0e0);
 }
 
+.row-actions-icons {
+    gap: 6px;
+    flex-wrap: nowrap;
+}
+
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-soft);
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.icon-btn svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+}
+
+.icon-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateY(-1px);
+}
+
+.icon-btn:focus-visible {
+    outline: 2px solid rgba(104, 181, 255, 0.6);
+    outline-offset: 2px;
+}
+
+.icon-btn-bet.active {
+    color: #08111f;
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--amber), #ffd98a);
+    box-shadow: 0 6px 18px rgba(247, 195, 95, 0.28);
+}
+
+.icon-btn-ignore.active {
+    color: #2d0f12;
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--danger), #ff8a5b);
+    box-shadow: 0 6px 18px rgba(255, 106, 115, 0.28);
+}
+
+.icon-btn-follow.active {
+    color: #08111f;
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--teal), #8af0e0);
+    box-shadow: 0 6px 18px rgba(68, 212, 200, 0.28);
+}
+
+.icon-btn-delete,
+.icon-btn-purge {
+    color: #ffc5ca;
+    border-color: rgba(255, 106, 115, 0.22);
+    background: rgba(255, 106, 115, 0.08);
+}
+
+.icon-btn-delete:hover,
+.icon-btn-purge:hover {
+    color: #fff;
+    background: rgba(255, 106, 115, 0.2);
+    border-color: rgba(255, 106, 115, 0.38);
+}
+
+.icon-btn-restore {
+    color: #bff9f2;
+    border-color: rgba(68, 212, 200, 0.22);
+    background: rgba(68, 212, 200, 0.1);
+}
+
+.icon-btn-restore:hover {
+    color: #fff;
+    background: rgba(68, 212, 200, 0.22);
+    border-color: rgba(68, 212, 200, 0.4);
+}
+
 tr.state-bet_placed {
     opacity: 0.44;
 }
@@ -1181,7 +1265,21 @@ tr.anomaly-row td {
 
 #anomaly-table th:last-child,
 #anomaly-table td:last-child {
-    min-width: 170px;
+    min-width: 190px;
+}
+
+#deleted-table {
+    min-width: 1200px;
+}
+
+#deleted-table th:nth-child(2),
+#deleted-table td:nth-child(2) {
+    min-width: 300px;
+}
+
+#deleted-table th:last-child,
+#deleted-table td:last-child {
+    min-width: 110px;
 }
 
 #upcoming-table th:nth-child(2),

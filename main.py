@@ -16,7 +16,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import config
 from db import (
     init_db, close_db, get_anomalies, update_anomaly_status,
-    bulk_update_anomaly_status, delete_anomalies, clear_anomalies,
+    bulk_update_anomaly_status, delete_anomalies,
+    soft_delete_anomalies, soft_delete_all_anomalies,
+    restore_anomalies, get_deleted_anomalies, purge_deleted_anomalies,
     get_analyses, delete_analyses, clear_analyses,
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
@@ -158,6 +160,46 @@ async def api_bulk_status(request: Request):
 
 @app.post("/api/anomalies/delete")
 async def api_delete_anomalies(request: Request):
+    """Soft delete: move anomalies to the trash."""
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        return JSONResponse({"error": "No ids provided"}, status_code=400)
+    await soft_delete_anomalies(ids)
+    return {"ok": True}
+
+
+@app.post("/api/anomalies/clear")
+async def api_clear_anomalies():
+    """Soft delete: send every active anomaly to the trash."""
+    await soft_delete_all_anomalies()
+    return {"ok": True}
+
+
+@app.get("/api/anomalies/deleted")
+async def api_get_deleted_anomalies():
+    rows = await get_deleted_anomalies()
+    for row in rows:
+        if isinstance(row.get("triggered_rules"), str):
+            row["triggered_rules"] = json.loads(row["triggered_rules"])
+        if isinstance(row.get("stats_snapshot"), str):
+            row["stats_snapshot"] = json.loads(row["stats_snapshot"])
+    return rows
+
+
+@app.post("/api/anomalies/restore")
+async def api_restore_anomalies(request: Request):
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        return JSONResponse({"error": "No ids provided"}, status_code=400)
+    await restore_anomalies(ids)
+    return {"ok": True}
+
+
+@app.post("/api/anomalies/purge")
+async def api_purge_anomalies(request: Request):
+    """Permanently delete specific trashed anomalies."""
     body = await request.json()
     ids = body.get("ids", [])
     if not ids:
@@ -166,9 +208,10 @@ async def api_delete_anomalies(request: Request):
     return {"ok": True}
 
 
-@app.post("/api/anomalies/clear")
-async def api_clear_anomalies():
-    await clear_anomalies()
+@app.post("/api/anomalies/purge-all")
+async def api_purge_all_anomalies():
+    """Permanently delete everything currently in the trash."""
+    await purge_deleted_anomalies()
     return {"ok": True}
 
 

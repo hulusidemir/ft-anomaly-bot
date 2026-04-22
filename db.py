@@ -80,6 +80,12 @@ async def init_db():
         await db.commit()
     except Exception:
         pass
+    # Migration: soft-delete column
+    try:
+        await db.execute("ALTER TABLE anomalies ADD COLUMN deleted_at TEXT DEFAULT NULL")
+        await db.commit()
+    except Exception:
+        pass  # column already exists
 
 
 # ---- Anomaly CRUD ----
@@ -146,13 +152,27 @@ async def get_anomalies(status_filter: str | None = None, limit: int = 200):
     db = await get_db()
     if status_filter:
         cursor = await db.execute(
-            "SELECT * FROM anomalies WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM anomalies WHERE status = ? AND deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
             (status_filter, limit),
         )
     else:
         cursor = await db.execute(
-            "SELECT * FROM anomalies ORDER BY created_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM anomalies WHERE deleted_at IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (limit,),
         )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_deleted_anomalies(limit: int = 500):
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
+        "ORDER BY deleted_at DESC LIMIT ?",
+        (limit,),
+    )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
 
@@ -160,7 +180,8 @@ async def get_anomalies(status_filter: str | None = None, limit: int = 200):
 async def update_anomaly_status(anomaly_id: int, status: str):
     db = await get_db()
     await db.execute(
-        "UPDATE anomalies SET status = ? WHERE id = ?", (status, anomaly_id)
+        "UPDATE anomalies SET status = ? WHERE id = ? AND deleted_at IS NULL",
+        (status, anomaly_id),
     )
     await db.commit()
 
@@ -169,13 +190,54 @@ async def bulk_update_anomaly_status(ids: list[int], status: str):
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
     await db.execute(
-        f"UPDATE anomalies SET status = ? WHERE id IN ({placeholders})",
+        f"UPDATE anomalies SET status = ? "
+        f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
         [status] + ids,
     )
     await db.commit()
 
 
+async def soft_delete_anomalies(ids: list[int]):
+    """Move anomalies to the trash by setting deleted_at."""
+    if not ids:
+        return
+    db = await get_db()
+    placeholders = ",".join("?" for _ in ids)
+    await db.execute(
+        f"UPDATE anomalies SET deleted_at = datetime('now') "
+        f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+        ids,
+    )
+    await db.commit()
+
+
+async def soft_delete_all_anomalies():
+    """Move all non-deleted anomalies to the trash."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE anomalies SET deleted_at = datetime('now') "
+        "WHERE deleted_at IS NULL"
+    )
+    await db.commit()
+
+
+async def restore_anomalies(ids: list[int]):
+    if not ids:
+        return
+    db = await get_db()
+    placeholders = ",".join("?" for _ in ids)
+    await db.execute(
+        f"UPDATE anomalies SET deleted_at = NULL "
+        f"WHERE id IN ({placeholders})",
+        ids,
+    )
+    await db.commit()
+
+
 async def delete_anomalies(ids: list[int]):
+    """Permanently delete anomalies (used when purging trash items)."""
+    if not ids:
+        return
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
     await db.execute(
@@ -184,7 +246,15 @@ async def delete_anomalies(ids: list[int]):
     await db.commit()
 
 
+async def purge_deleted_anomalies():
+    """Permanently delete every row currently in the trash."""
+    db = await get_db()
+    await db.execute("DELETE FROM anomalies WHERE deleted_at IS NOT NULL")
+    await db.commit()
+
+
 async def clear_anomalies():
+    """Permanently delete every anomaly (active and trashed)."""
     db = await get_db()
     await db.execute("DELETE FROM anomalies")
     await db.commit()
