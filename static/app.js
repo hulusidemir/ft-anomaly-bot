@@ -74,7 +74,6 @@ $$('.tab').forEach((tab) => {
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
         if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
-        if (tab.dataset.tab === 'live') loadLiveMatches();
     });
 });
 
@@ -798,12 +797,21 @@ $('#btn-trigger-upcoming').addEventListener('click', async () => {
 
 async function loadLiveMatches() {
     const tbody = $('#live-body');
-    if (!liveMatches.length && tbody) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maçlar yükleniyor...</td></tr>';
+    const button = $('#btn-refresh-live');
+    if (tbody) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maçlar çekiliyor...</td></tr>';
     }
+    setButtonBusy(button, 'Çekiliyor...', 'Güncel Canlı Maçları Çek', true);
 
     const data = await apiFetch(API.liveMatches);
-    if (!data) return;
+    setButtonBusy(button, 'Çekiliyor...', 'Güncel Canlı Maçları Çek', false);
+
+    if (!data) {
+        if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maç listesi alınamadı. Tekrar deneyin.</td></tr>';
+        }
+        return;
+    }
 
     liveMatches = data;
     renderLiveMatches();
@@ -1463,15 +1471,4 @@ async function refreshAllData() {
     setInterval(loadAnomalies, 60000);
     setInterval(loadUpcoming, 60000);
     setInterval(checkStatus, 30000);
-    setInterval(() => {
-        const activeTab = document.querySelector('.tab.active');
-        if (activeTab && activeTab.dataset.tab === 'live') {
-            loadLiveMatches();
-            // Refresh details of currently-expanded rows
-            expandedLiveRows.forEach((eid) => {
-                liveDetailsCache.delete(eid);
-                ensureLiveDetails(eid).then(() => renderLiveDetails(eid));
-            });
-        }
-    }, 60000);
 })();
