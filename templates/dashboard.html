@@ -139,6 +139,11 @@
                                 <option value="ignored">Gözardı Edildi</option>
                                 <option value="following">Takip Ediliyor</option>
                             </select>
+                            <div class="segmented-control" id="filter-live2-draw">
+                                <button type="button" class="segment-btn active" data-value="all">Tümü</button>
+                                <button type="button" class="segment-btn" data-value="draw">Beraberlik</button>
+                                <button type="button" class="segment-btn" data-value="non_draw">Beraberlik Yok</button>
+                            </div>
                             <input type="text" id="search-live2" class="input-search" placeholder="Takım, lig veya skor ara">
                             <button id="btn-fetch-live2" class="btn btn-secondary">Canlı Maçları Çek</button>
                             <span id="live2-count" class="selected-count">0 maç</span>
@@ -167,6 +172,11 @@
                 <section id="tab-detections" class="tab-content">
                     <div class="toolbar">
                         <div class="toolbar-left">
+                            <div class="segmented-control" id="filter-detections-draw">
+                                <button type="button" class="segment-btn active" data-value="all">Tümü</button>
+                                <button type="button" class="segment-btn" data-value="draw">Beraberlik</button>
+                                <button type="button" class="segment-btn" data-value="non_draw">Beraberlik Yok</button>
+                            </div>
                             <input type="text" id="search-detections" class="input-search" placeholder="Takipteki takım, lig veya skor ara">
                             <button id="btn-refresh-detections" class="btn btn-secondary">Listeyi Yenile</button>
                             <span id="detections-count" class="selected-count">0 maç</span>

@@ -483,6 +483,39 @@ select {
     gap: 10px;
 }
 
+.segmented-control {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-soft);
+    gap: 4px;
+}
+
+.segment-btn {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.segment-btn:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.segment-btn.active {
+    color: #07111f;
+    background: linear-gradient(135deg, var(--blue), #a8d6ff);
+}
+
 .selected-count {
     display: inline-flex;
     align-items: center;

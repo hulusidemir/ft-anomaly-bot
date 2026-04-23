@@ -305,6 +305,33 @@ function sofascoreEventUrl(eventId) {
     return `https://www.sofascore.com/event/${encodeURIComponent(eventId)}`;
 }
 
+function getSegmentValue(containerId) {
+    const active = document.querySelector(`#${containerId} .segment-btn.active`);
+    return active ? active.dataset.value : 'all';
+}
+
+function applyDrawFilter(data, mode) {
+    if (mode === 'draw') {
+        return data.filter((item) => Number(item.score_home) === Number(item.score_away));
+    }
+    if (mode === 'non_draw') {
+        return data.filter((item) => Number(item.score_home) !== Number(item.score_away));
+    }
+    return data;
+}
+
+function bindSegmentedFilter(containerId, onChange) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.querySelectorAll('.segment-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+            container.querySelectorAll('.segment-btn').forEach((item) => item.classList.remove('active'));
+            button.classList.add('active');
+            onChange();
+        });
+    });
+}
+
 function liveMatchSnapshot(match) {
     return {
         event_id: match.event_id,
@@ -1297,9 +1324,11 @@ async function loadLiveMatches2() {
 function getVisibleLive2Matches() {
     const filter = ($('#filter-live2-status') || {}).value || '';
     const searchQuery = ($('#search-live2') || {}).value || '';
+    const drawFilter = getSegmentValue('filter-live2-draw');
 
     let filtered = liveMatches2;
     if (filter) filtered = filtered.filter((item) => (item.status || 'new') === filter);
+    filtered = applyDrawFilter(filtered, drawFilter);
 
     filtered = filterBySearch(filtered, searchQuery, (item) =>
         `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
@@ -1558,6 +1587,7 @@ if (btnFetchLive2) btnFetchLive2.addEventListener('click', loadLiveMatches2);
 
 const filterLive2 = $('#filter-live2-status');
 if (filterLive2) filterLive2.addEventListener('change', renderLive2Matches);
+bindSegmentedFilter('filter-live2-draw', renderLive2Matches);
 
 const searchLive2 = $('#search-live2');
 if (searchLive2) searchLive2.addEventListener('input', renderLive2Matches);
@@ -1603,7 +1633,8 @@ async function loadLiveDetections() {
 
 function getVisibleLiveDetections() {
     const searchQuery = ($('#search-detections') || {}).value || '';
-    return filterBySearch(liveDetections, searchQuery, (item) =>
+    const drawFilter = getSegmentValue('filter-detections-draw');
+    return filterBySearch(applyDrawFilter(liveDetections, drawFilter), searchQuery, (item) =>
         `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
     );
 }
@@ -1671,6 +1702,7 @@ async function setLiveDetectionStatus(eventId, status) {
 
 const btnRefreshDetections = $('#btn-refresh-detections');
 if (btnRefreshDetections) btnRefreshDetections.addEventListener('click', loadLiveDetections);
+bindSegmentedFilter('filter-detections-draw', renderLiveDetections);
 
 const searchDetections = $('#search-detections');
 if (searchDetections) searchDetections.addEventListener('input', renderLiveDetections);
