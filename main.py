@@ -307,7 +307,7 @@ async def api_status():
 # Short-TTL in-memory caches so the dashboard tab is fast and we don't hammer
 # Sofascore's rate limit. Sofascore's live endpoint already has heavy bot
 # protection; re-using the last scrape for ~20s is safe.
-_live_list_cache: dict = {"matches": [], "ts": 0.0}
+_live_list_cache: dict = {"matches": [], "ts": 0.0, "has_value": False}
 _live_list_lock = asyncio.Lock()
 
 _live_details_cache: dict[str, dict] = {}  # event_id -> {"data": dict, "ts": float}
@@ -317,22 +317,39 @@ LIVE_LIST_TTL = 20.0
 LIVE_DETAILS_TTL = 45.0
 
 
-async def _get_live_matches_cached():
+async def _get_live_matches_cached(retries: int = 5):
     async with _live_list_lock:
         now = time.monotonic()
-        if _live_list_cache["matches"] and (now - _live_list_cache["ts"]) < LIVE_LIST_TTL:
-            return _live_list_cache["matches"]
-        fresh = await scraper.get_live_matches()
-        if fresh:
+        if _live_list_cache["has_value"] and (now - _live_list_cache["ts"]) < LIVE_LIST_TTL:
+            return _live_list_cache["matches"], None, False
+
+        fresh = await scraper.get_live_matches(retries=retries)
+        fetch_error = scraper.last_live_fetch_error
+        if fetch_error:
+            if _live_list_cache["has_value"]:
+                return _live_list_cache["matches"], fetch_error, True
+            return [], fetch_error, False
+
+        if fresh or not fetch_error:
             _live_list_cache["matches"] = fresh
             _live_list_cache["ts"] = now
-    return _live_list_cache["matches"]
+            _live_list_cache["has_value"] = True
+    return _live_list_cache["matches"], None, False
 
 
 @app.get("/api/live-matches")
 async def api_live_matches():
     """Return all currently-live football matches enriched with user action status."""
-    matches = await _get_live_matches_cached()
+    matches, fetch_error, stale = await _get_live_matches_cached(retries=2)
+    if fetch_error and not stale:
+        detail = fetch_error.get("message", "Canlı maç listesi alınamadı")
+        status = fetch_error.get("status")
+        suffix = f" (HTTP {status})" if status else ""
+        return JSONResponse(
+            {"error": f"Sofascore canlı maç listesi alınamadı: {detail}{suffix}"},
+            status_code=502,
+        )
+
     event_ids = [m.event_id for m in matches]
     actions = await get_live_actions(event_ids) if event_ids else {}
 

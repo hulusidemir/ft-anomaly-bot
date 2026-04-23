@@ -117,6 +117,8 @@ class SofascoreScraper:
         self._accept_lang = random.choice(ACCEPT_LANGUAGES)
         self._session_warm_at = 0.0
         self._consecutive_bot_errors = 0
+        self.last_fetch_error: dict | None = None
+        self.last_live_fetch_error: dict | None = None
 
     def _build_session(self) -> AsyncSession:
         # NOTE: do NOT set Sec-Fetch-* / Sec-Ch-Ua-* manually – curl_cffi's
@@ -211,6 +213,7 @@ class SofascoreScraper:
           * 5xx            → transient: backoff, no rotation
         """
         list_endpoint = self._is_list_endpoint(url)
+        self.last_fetch_error = None
 
         for attempt in range(retries):
             await self._warm_session()
@@ -220,6 +223,11 @@ class SofascoreScraper:
                     session = await self._get_session()
                     resp = await session.get(url)
                 except Exception as e:
+                    self.last_fetch_error = {
+                        "url": url,
+                        "status": None,
+                        "message": f"Request error: {e}",
+                    }
                     logger.warning(f"Request error on {url}: {e}")
                     await self._rotate_session()
                     await asyncio.sleep(2 * (attempt + 1) + random.uniform(0.5, 2.0))
@@ -230,13 +238,24 @@ class SofascoreScraper:
             if status == 200:
                 self._consecutive_bot_errors = 0
                 try:
+                    self.last_fetch_error = None
                     return resp.json()
                 except Exception:
+                    self.last_fetch_error = {
+                        "url": url,
+                        "status": status,
+                        "message": "Non-JSON response",
+                    }
                     logger.warning(f"Non-JSON 200 from {url}")
                     return None
 
             if status == 429:
                 self._consecutive_bot_errors += 1
+                self.last_fetch_error = {
+                    "url": url,
+                    "status": status,
+                    "message": "Rate limited by Sofascore",
+                }
                 wait = (2 ** attempt) * 5 + random.uniform(2, 6)
                 logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
@@ -246,6 +265,11 @@ class SofascoreScraper:
 
             if status == 403:
                 self._consecutive_bot_errors += 1
+                self.last_fetch_error = {
+                    "url": url,
+                    "status": status,
+                    "message": "Forbidden by Sofascore",
+                }
                 wait = (2 ** attempt) * 3 + random.uniform(3, 7)
                 logger.warning(f"Forbidden (403) on {url} – rotating session")
                 await self._rotate_session()
@@ -257,6 +281,11 @@ class SofascoreScraper:
                 # On detail endpoints, a single 404 is usually legit (no stats yet).
                 if list_endpoint:
                     self._consecutive_bot_errors += 1
+                    self.last_fetch_error = {
+                        "url": url,
+                        "status": status,
+                        "message": "List endpoint returned 404",
+                    }
                     wait = (2 ** attempt) * 3 + random.uniform(2, 5)
                     logger.warning(
                         f"404 on list endpoint {url} – treating as bot-protection, "
@@ -268,6 +297,11 @@ class SofascoreScraper:
 
                 # Detail endpoint 404 – accept unless we're seeing a burst.
                 if self._consecutive_bot_errors >= 3 and attempt == 0:
+                    self.last_fetch_error = {
+                        "url": url,
+                        "status": status,
+                        "message": "Detail endpoint returned 404 during 404 burst",
+                    }
                     logger.warning(
                         f"404 on {url} during 404-burst (count={self._consecutive_bot_errors})"
                         f" – rotating before giving up"
@@ -277,15 +311,30 @@ class SofascoreScraper:
                     self._consecutive_bot_errors = 0
                     continue
                 self._consecutive_bot_errors += 1
+                self.last_fetch_error = {
+                    "url": url,
+                    "status": status,
+                    "message": "Detail endpoint returned 404",
+                }
                 logger.debug(f"404 on {url} (likely no data)")
                 return None
 
             if status >= 500:
+                self.last_fetch_error = {
+                    "url": url,
+                    "status": status,
+                    "message": "Sofascore server error",
+                }
                 wait = (2 ** attempt) * 2 + random.uniform(1, 2)
                 logger.warning(f"Server error ({status}) on {url}, retrying in {wait:.1f}s")
                 await asyncio.sleep(wait)
                 continue
 
+            self.last_fetch_error = {
+                "url": url,
+                "status": status,
+                "message": f"Unexpected HTTP {status}",
+            }
             logger.warning(f"HTTP {status} on {url}")
             return None
 
@@ -340,12 +389,21 @@ class SofascoreScraper:
 
         return 0
 
-    async def get_live_matches(self) -> list[LiveMatch]:
+    async def get_live_matches(self, retries: int = 5) -> list[LiveMatch]:
         """Fetch all currently live football matches."""
-        data = await self._fetch_json(f"{SOFASCORE_BASE}/sport/football/events/live")
+        data = await self._fetch_json(
+            f"{SOFASCORE_BASE}/sport/football/events/live",
+            retries=retries,
+        )
         if not data:
+            self.last_live_fetch_error = self.last_fetch_error or {
+                "url": f"{SOFASCORE_BASE}/sport/football/events/live",
+                "status": None,
+                "message": "No response from Sofascore",
+            }
             logger.error("Failed to fetch live matches")
             return []
+        self.last_live_fetch_error = None
 
         matches = []
         for event in data.get("events", []):

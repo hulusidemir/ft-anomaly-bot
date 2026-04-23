@@ -73,6 +73,7 @@ $$('.tab').forEach((tab) => {
         $$('.tab-content').forEach((item) => item.classList.remove('active'));
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
+        if (tab.dataset.tab === 'live' && !liveMatches.length) loadLiveMatches();
         if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
     });
 });
@@ -100,7 +101,14 @@ async function apiFetch(url, opts = {}) {
         });
 
         if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            let message = `HTTP ${response.status}`;
+            try {
+                const errorBody = await response.json();
+                message = errorBody.error || errorBody.detail || message;
+            } catch (_) {
+                // Keep the HTTP status when the server did not return JSON.
+            }
+            throw new Error(message);
         }
 
         return await response.json();
