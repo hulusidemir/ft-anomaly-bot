@@ -1,9 +1,14 @@
 import os
 import json
+from datetime import datetime
 import aiosqlite
-from config import DATABASE_PATH
+from config import DATABASE_PATH, TZ_TURKEY
 
 _db: aiosqlite.Connection | None = None
+
+
+def turkey_now_str() -> str:
+    return datetime.now(TZ_TURKEY).strftime("%Y-%m-%d %H:%M:%S")
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -100,6 +105,22 @@ async def init_db():
         await db.commit()
     except Exception:
         pass  # column already exists
+    # Migration: persist anomaly detection time in Turkey local time.
+    try:
+        await db.execute("ALTER TABLE anomalies ADD COLUMN detected_at_tr TEXT DEFAULT ''")
+        await db.commit()
+    except Exception:
+        pass  # column already exists
+    try:
+        await db.execute(
+            "UPDATE anomalies "
+            "SET detected_at_tr = datetime(created_at, '+3 hours') "
+            "WHERE COALESCE(detected_at_tr, '') = '' "
+            "AND COALESCE(created_at, '') != ''"
+        )
+        await db.commit()
+    except Exception:
+        pass
     # Migration: persist enough live-match metadata for the Canlı Tespit view.
     for column_sql in (
         "ALTER TABLE live_match_actions ADD COLUMN home_team TEXT DEFAULT ''",
@@ -163,13 +184,13 @@ async def insert_anomaly(
             """INSERT INTO anomalies
                (match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type, triggered_rules, stats_snapshot,
-                alert_number)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                alert_number, detected_at_tr)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type,
                 json.dumps(triggered_rules), json.dumps(stats_snapshot),
-                alert_number,
+                alert_number, turkey_now_str(),
             ),
         )
         await db.commit()

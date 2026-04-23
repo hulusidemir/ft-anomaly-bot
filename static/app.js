@@ -383,7 +383,7 @@ function renderAnomalies() {
             case 'alert':
                 return item.alert_number || 1;
             case 'time':
-                return item.created_at || '';
+                return item.detected_at_tr || item.created_at || '';
             default:
                 return '';
         }
@@ -398,7 +398,9 @@ function renderAnomalies() {
         const rules = item.triggered_rules || [];
         const ruleHtml = rules.map((rule) => `<li>${escHtml(rule)}</li>`).join('');
         const stateClass = item.status !== 'new' ? `state-${item.status}` : '';
-        const time = formatCreatedAt(item.created_at);
+        const time = item.detected_at_tr
+            ? formatTurkeyTimestamp(item.detected_at_tr)
+            : formatCreatedAt(item.created_at);
         const conditionBadge = item.condition_type === 'A'
             ? '<span class="badge badge-a">A / Beraberlik</span>'
             : '<span class="badge badge-b">B / 1 Fark</span>';
@@ -1923,6 +1925,18 @@ function formatCreatedAt(value, includeDate = false) {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+function formatTurkeyTimestamp(value, includeDate = false) {
+    if (!value) return '-';
+    const normalized = String(value).trim().replace('T', ' ');
+    const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+    if (!match) return value;
+
+    const [, year, month, day, hour, minute] = match;
+    return includeDate
+        ? `${day}.${month}.${year} ${hour}:${minute}`
+        : `${hour}:${minute}`;
 }
 
 function runTypeLabel(runType) {
