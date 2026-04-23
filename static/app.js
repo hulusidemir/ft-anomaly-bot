@@ -35,6 +35,7 @@ const ICONS = {
     delete: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
     restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
     purge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+    details: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h12"/></svg>',
 };
 
 let anomalies = [];
@@ -807,7 +808,7 @@ async function loadLiveMatches() {
     const tbody = $('#live-body');
     const button = $('#btn-refresh-live');
     if (tbody) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maçlar çekiliyor...</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maçlar çekiliyor...</td></tr>';
     }
     setButtonBusy(button, 'Çekiliyor...', 'Güncel Canlı Maçları Çek', true);
 
@@ -816,7 +817,7 @@ async function loadLiveMatches() {
 
     if (!data) {
         if (tbody) {
-            tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maç listesi alınamadı. Tekrar deneyin.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maç listesi alınamadı. Tekrar deneyin.</td></tr>';
         }
         return;
     }
@@ -847,8 +848,6 @@ function getVisibleLiveMatches() {
                 return item.minute || 0;
             case 'league':
                 return (item.league || '').toLowerCase();
-            case 'status':
-                return item.status || 'new';
             default:
                 return '';
         }
@@ -869,7 +868,7 @@ function renderLiveMatches() {
     setText('#live-count', `${liveMatches.length} maç`);
 
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maç bulunamadı</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maç bulunamadı</td></tr>';
         return;
     }
 
@@ -886,8 +885,9 @@ function renderLiveMatches() {
 
     $$('.live-row-main').forEach((row) => {
         row.addEventListener('click', (event) => {
-            if (event.target.closest('a, button, input, .row-actions')) return;
-            toggleLiveDetails(row.dataset.eid);
+            if (event.target.closest('button, input, .row-actions, .col-check')) return;
+            const url = sofascoreEventUrl(row.dataset.eid);
+            if (url && url !== '#') window.open(url, '_blank', 'noopener,noreferrer');
         });
     });
 
@@ -899,23 +899,22 @@ function buildLiveRowHtml(item) {
     const statusValue = item.status || 'new';
     const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
     const expanded = expandedLiveRows.has(item.event_id) ? 'expanded' : '';
+    const statusDesc = item.status_desc ? ` • ${escHtml(item.status_desc)}` : '';
     return `
-        <tr class="live-row-main ${stateClass} ${expanded}" data-eid="${escHtml(item.event_id)}">
+        <tr class="live-row-main ${stateClass} ${expanded}" data-eid="${escHtml(item.event_id)}" title="Sofascore sayfasını aç">
             <td class="col-check"><input type="checkbox" class="chk-live" data-eid="${escHtml(item.event_id)}"></td>
             <td>
                 <div class="cell-stack">
-                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
-                        ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
-                    </a>
-                    <span class="cell-subtle">Etkinlik ID: ${escHtml(item.event_id)} • ${escHtml(item.status_desc || '')}</span>
+                    <span class="match-link">${escHtml(item.home_team)} vs ${escHtml(item.away_team)}</span>
+                    <span class="cell-subtle">Etkinlik ID: ${escHtml(item.event_id)}${statusDesc}</span>
                 </div>
             </td>
             <td><span class="score-pill">${item.score_home} - ${item.score_away}</span></td>
             <td><span class="table-tag live-minute">${item.minute || 0}'</span></td>
             <td>${escHtml(item.league || '-')}</td>
-            <td><span class="upcoming-status-label">${statusLabel(statusValue)}</span></td>
             <td>
                 <div class="row-actions row-actions-icons">
+                    <button class="icon-btn icon-btn-details${expandedLiveRows.has(item.event_id) ? ' active' : ''}" onclick="toggleLiveDetails('${escAttr(item.event_id)}')" title="Detayları gör" aria-label="Detayları gör">${ICONS.details}</button>
                     <button class="icon-btn icon-btn-bet${statusValue === 'bet_placed' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
                     <button class="icon-btn icon-btn-ignore${statusValue === 'ignored' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
                     <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
@@ -923,8 +922,8 @@ function buildLiveRowHtml(item) {
             </td>
         </tr>
         <tr class="live-row-details" data-eid-details="${escHtml(item.event_id)}" style="${expandedLiveRows.has(item.event_id) ? '' : 'display:none;'}">
-            <td colspan="7">
-                <div class="live-details" id="live-details-${escHtml(item.event_id)}">Detaylar yükleniyor...</div>
+            <td colspan="6">
+                <div class="live-details">Detaylar yükleniyor...</div>
             </td>
         </tr>`;
 }
@@ -938,16 +937,20 @@ async function toggleLiveDetails(eventId) {
     const mainRow = document.querySelector(`.live-row-main[data-eid="${CSS.escape(eventId)}"]`);
     if (!detailsRow) return;
 
+    const detailsBtn = mainRow ? mainRow.querySelector('.icon-btn-details') : null;
+
     if (expandedLiveRows.has(eventId)) {
         expandedLiveRows.delete(eventId);
         detailsRow.style.display = 'none';
         if (mainRow) mainRow.classList.remove('expanded');
+        if (detailsBtn) detailsBtn.classList.remove('active');
         return;
     }
 
     expandedLiveRows.add(eventId);
     detailsRow.style.display = '';
     if (mainRow) mainRow.classList.add('expanded');
+    if (detailsBtn) detailsBtn.classList.add('active');
     renderLiveDetails(eventId);
     await ensureLiveDetails(eventId);
     renderLiveDetails(eventId);
@@ -986,27 +989,36 @@ function renderLiveDetails(eventId) {
     const odds = data.odds || {};
 
     const rows = [
-        { label: 'Topa Sahip Olma (%)', home: stats.possession_home, away: stats.possession_away, unit: '%' },
-        { label: 'Tehlikeli Atak', home: stats.dangerous_attacks_home, away: stats.dangerous_attacks_away },
+        { label: 'Topa Sahip Olma', home: stats.possession_home, away: stats.possession_away, unit: '%' },
+        { label: 'Beklenen Gol (xG)', home: stats.expected_goals_home, away: stats.expected_goals_away, decimals: 2 },
         { label: 'Toplam Şut', home: stats.total_shots_home, away: stats.total_shots_away },
         { label: 'İsabetli Şut', home: stats.shots_on_target_home, away: stats.shots_on_target_away },
         { label: 'Kaçan Şut', home: stats.shots_off_target_home, away: stats.shots_off_target_away },
+        { label: 'Bloklanmış Şut', home: stats.blocked_shots_home, away: stats.blocked_shots_away },
+        { label: 'Büyük Şans', home: stats.big_chances_home, away: stats.big_chances_away },
         { label: 'Korner', home: stats.corner_kicks_home, away: stats.corner_kicks_away },
+        { label: 'Pas İsabeti', home: statPercent(stats.pass_accuracy_home, passAccuracy(stats.accurate_passes_home, stats.total_passes_home)), away: statPercent(stats.pass_accuracy_away, passAccuracy(stats.accurate_passes_away, stats.total_passes_away)), unit: '%' },
         { label: 'Ofsayt', home: stats.offsides_home, away: stats.offsides_away },
         { label: 'Faul', home: stats.fouls_home, away: stats.fouls_away },
         { label: 'Sarı Kart', home: stats.yellow_cards_home, away: stats.yellow_cards_away },
         { label: 'Kırmızı Kart', home: stats.red_cards_home, away: stats.red_cards_away },
     ];
 
-    const statsHtml = rows.map((r) => {
+    const visibleRows = rows.filter((r) => {
+        const home = Number(r.home) || 0;
+        const away = Number(r.away) || 0;
+        return home > 0 || away > 0;
+    });
+
+    const statsHtml = visibleRows.map((r) => {
         const home = Number(r.home) || 0;
         const away = Number(r.away) || 0;
         const total = home + away;
         const hPct = total > 0 ? (home * 100) / total : 50;
         const aPct = total > 0 ? (away * 100) / total : 50;
         const suffix = r.unit || '';
-        const displayH = r.unit ? `${formatNumber(home)}${suffix}` : formatNumber(home);
-        const displayA = r.unit ? `${formatNumber(away)}${suffix}` : formatNumber(away);
+        const displayH = `${formatNumber(home, r.decimals)}${suffix}`;
+        const displayA = `${formatNumber(away, r.decimals)}${suffix}`;
 
         return `
             <div class="stat-row">
@@ -1112,10 +1124,24 @@ function renderExpectationBlock(match, votes, odds) {
     return oddsHtml + votesHtml;
 }
 
-function formatNumber(value) {
+function statPercent(primary, fallback) {
+    const value = Number(primary);
+    if (Number.isFinite(value) && value > 0) return value;
+    return fallback;
+}
+
+function passAccuracy(accurate, total) {
+    const acc = Number(accurate) || 0;
+    const ttl = Number(total) || 0;
+    if (ttl <= 0) return 0;
+    return (acc * 100) / ttl;
+}
+
+function formatNumber(value, decimals = null) {
     if (value == null || value === '') return '-';
     const num = Number(value);
     if (!Number.isFinite(num)) return String(value);
+    if (decimals != null) return num.toFixed(decimals);
     if (Math.abs(num) >= 10 || Number.isInteger(num)) return String(Math.round(num));
     return num.toFixed(1);
 }

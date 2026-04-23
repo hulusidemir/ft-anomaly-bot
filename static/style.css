@@ -928,6 +928,13 @@ input[type="checkbox"]:checked::before {
     box-shadow: 0 6px 18px rgba(20, 88, 70, 0.24);
 }
 
+.icon-btn-details.active {
+    color: #07111f;
+    border-color: transparent;
+    background: linear-gradient(135deg, var(--blue), #a8d6ff);
+    box-shadow: 0 6px 18px rgba(104, 181, 255, 0.24);
+}
+
 .icon-btn-delete,
 .icon-btn-purge {
     color: #ffc5ca;
