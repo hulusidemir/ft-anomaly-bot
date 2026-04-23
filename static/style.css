@@ -1745,8 +1745,136 @@ tbody tr.state-following.anomaly-row:hover td {
     color: var(--text-muted);
 }
 
+/* ===== Live Matches 2 ===== */
+
+.live2-select-row {
+    display: flex;
+    justify-content: flex-end;
+    margin: 0 0 14px;
+}
+
+.live2-select-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-soft);
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.live2-list {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 16px;
+}
+
+.live2-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(9, 19, 34, 0.78);
+    box-shadow: var(--shadow-soft);
+    overflow: hidden;
+}
+
+.live2-card.state-bet_placed {
+    border-color: rgba(247, 195, 95, 0.34);
+}
+
+.live2-card.state-ignored {
+    opacity: 0.72;
+    border-color: rgba(255, 106, 115, 0.28);
+}
+
+.live2-card.state-following {
+    border-color: rgba(49, 208, 164, 0.34);
+    box-shadow: 0 18px 34px rgba(49, 208, 164, 0.08);
+}
+
+.live2-card-head {
+    display: grid;
+    grid-template-columns: auto minmax(220px, 1fr) auto auto;
+    gap: 14px;
+    align-items: center;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border-soft);
+}
+
+.live2-check {
+    display: inline-flex;
+    align-items: center;
+}
+
+.live2-match {
+    min-width: 0;
+}
+
+.live2-meta {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+}
+
+.live2-scorebox {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.live2-actions {
+    justify-content: flex-end;
+}
+
+.live2-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+    gap: 24px;
+    padding: 18px;
+}
+
+.live2-stats,
+.live2-context {
+    min-width: 0;
+}
+
+.live2-form-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+}
+
+.live2-team-context {
+    padding: 0 0 12px;
+    border-bottom: 1px dashed var(--border-soft);
+}
+
+.live2-team-context:last-child {
+    border-bottom: 0;
+}
+
+.live2-title-spaced {
+    margin-top: 18px;
+}
+
 @media (max-width: 900px) {
     .live-details-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+    }
+
+    .live2-card-head {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .live2-scorebox,
+    .live2-actions {
+        grid-column: 2;
+        justify-content: flex-start;
+    }
+
+    .live2-body {
         grid-template-columns: 1fr;
         gap: 18px;
     }

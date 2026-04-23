@@ -14,6 +14,7 @@ const API = {
     deleteAnalyses: '/api/analyses/delete',
     clearAnalyses: '/api/analyses/clear',
     liveMatches: '/api/live-matches',
+    liveMatches2: '/api/live-matches-2',
     liveMatchDetails: (id) => `/api/live-matches/${encodeURIComponent(id)}/details`,
     liveMatchStatus: (id) => `/api/live-matches/${encodeURIComponent(id)}/status`,
     liveMatchBulkStatus: '/api/live-matches/bulk-status',
@@ -42,6 +43,7 @@ let anomalies = [];
 let analyses = [];
 let upcomingMatches = [];
 let liveMatches = [];
+let liveMatches2 = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
 
@@ -49,6 +51,7 @@ const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
 const selectedUpcoming = new Set();
 const selectedLive = new Set();
+const selectedLive2 = new Set();
 const selectedDeleted = new Set();
 
 const liveDetailsCache = new Map();
@@ -1216,6 +1219,276 @@ if (btnBulkIgnoreLive) btnBulkIgnoreLive.addEventListener('click', () => bulkLiv
 const btnBulkFollowLive = $('#btn-bulk-follow-live');
 if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiveStatus('following'));
 
+/* ===== Live Matches 2 ===== */
+
+async function loadLiveMatches2() {
+    const list = $('#live2-list');
+    const button = $('#btn-fetch-live2');
+    if (list) {
+        list.innerHTML = '<div class="empty-msg">Canlı maçlar çekiliyor...</div>';
+    }
+    setButtonBusy(button, 'Çekiliyor...', 'Canlı Maçları Çek', true);
+
+    const data = await apiFetch(API.liveMatches2);
+    setButtonBusy(button, 'Çekiliyor...', 'Canlı Maçları Çek', false);
+
+    if (!data) {
+        liveMatches2 = [];
+        renderLive2Matches('Canlı maç listesi alınamadı. Tekrar deneyin.');
+        return;
+    }
+
+    liveMatches2 = Array.isArray(data) ? data : [];
+    renderLive2Matches();
+    touchLastUpdated();
+}
+
+function getVisibleLive2Matches() {
+    const filter = ($('#filter-live2-status') || {}).value || '';
+    const searchQuery = ($('#search-live2') || {}).value || '';
+
+    let filtered = liveMatches2;
+    if (filter) filtered = filtered.filter((item) => (item.status || 'new') === filter);
+
+    filtered = filterBySearch(filtered, searchQuery, (item) =>
+        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
+    );
+
+    return filtered;
+}
+
+function renderLive2Matches(emptyText = 'Canlı maç bulunamadı') {
+    const list = $('#live2-list');
+    if (!list) return;
+    const selectAll = $('#select-all-live2');
+    selectedLive2.clear();
+    if (selectAll) selectAll.checked = false;
+    updateLive2Bulk();
+
+    const filtered = getVisibleLive2Matches();
+    setText('#live2-count', `${liveMatches2.length} maç`);
+
+    if (!filtered.length) {
+        list.innerHTML = `<div class="empty-msg">${escHtml(emptyText)}</div>`;
+        return;
+    }
+
+    list.innerHTML = filtered.map((item) => buildLive2CardHtml(item)).join('');
+    $$('.chk-live2').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+            const eid = checkbox.dataset.eid;
+            if (checkbox.checked) selectedLive2.add(eid);
+            else selectedLive2.delete(eid);
+            updateLive2Bulk();
+        });
+    });
+}
+
+function buildLive2CardHtml(item) {
+    const statusValue = item.status || 'new';
+    const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
+    const details = item.details || {};
+    const form = details.form || {};
+    const votes = details.votes || {};
+    const odds = details.odds || {};
+    const statsHtml = renderLive2Stats(details.stats);
+    const formHtml = renderLive2Form(item, form);
+    const expectationHtml = renderExpectationBlock(item, votes, odds);
+    const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Canlı';
+
+    return `
+        <article class="live2-card ${stateClass}" data-eid="${escHtml(item.event_id)}">
+            <div class="live2-card-head">
+                <label class="live2-check">
+                    <input type="checkbox" class="chk-live2" data-eid="${escHtml(item.event_id)}">
+                </label>
+                <div class="live2-match">
+                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
+                        ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
+                    </a>
+                    <div class="live2-meta">${escHtml(item.league || '-')} • ${statusDesc} • Etkinlik ID: ${escHtml(item.event_id)}</div>
+                </div>
+                <div class="live2-scorebox">
+                    <span class="score-pill">${item.score_home} - ${item.score_away}</span>
+                    <span class="table-tag live-minute">${item.minute || 0}'</span>
+                    <span class="upcoming-status-label">${statusLabel(statusValue)}</span>
+                </div>
+                <div class="row-actions row-actions-icons live2-actions">
+                    <button class="icon-btn icon-btn-bet${statusValue === 'bet_placed' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
+                    <button class="icon-btn icon-btn-ignore${statusValue === 'ignored' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
+                    <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
+                </div>
+            </div>
+            <div class="live2-body">
+                <section class="live2-stats">
+                    <h3 class="live-details-title">Maç İstatistikleri</h3>
+                    ${statsHtml}
+                </section>
+                <section class="live2-context">
+                    <h3 class="live-details-title">Form ve Kadro</h3>
+                    ${formHtml}
+                    <h3 class="live-details-title live2-title-spaced">Beklenti</h3>
+                    ${expectationHtml}
+                </section>
+            </div>
+        </article>`;
+}
+
+function renderLive2Stats(stats) {
+    if (!stats) {
+        return '<div class="live-details-empty">İstatistik verisi henüz yok</div>';
+    }
+
+    const rows = [
+        { label: 'Topa Sahip Olma', home: stats.possession_home, away: stats.possession_away, unit: '%' },
+        { label: 'Beklenen Gol (xG)', home: stats.expected_goals_home, away: stats.expected_goals_away, decimals: 2 },
+        { label: 'Toplam Şut', home: stats.total_shots_home, away: stats.total_shots_away },
+        { label: 'İsabetli Şut', home: stats.shots_on_target_home, away: stats.shots_on_target_away },
+        { label: 'Kaçan Şut', home: stats.shots_off_target_home, away: stats.shots_off_target_away },
+        { label: 'Bloklanmış Şut', home: stats.blocked_shots_home, away: stats.blocked_shots_away },
+        { label: 'Büyük Şans', home: stats.big_chances_home, away: stats.big_chances_away },
+        { label: 'Tehlikeli Atak', home: stats.dangerous_attacks_home, away: stats.dangerous_attacks_away },
+        { label: 'Korner', home: stats.corner_kicks_home, away: stats.corner_kicks_away },
+        { label: 'Pas İsabeti', home: statPercent(stats.pass_accuracy_home, passAccuracy(stats.accurate_passes_home, stats.total_passes_home)), away: statPercent(stats.pass_accuracy_away, passAccuracy(stats.accurate_passes_away, stats.total_passes_away)), unit: '%' },
+        { label: 'Ofsayt', home: stats.offsides_home, away: stats.offsides_away },
+        { label: 'Faul', home: stats.fouls_home, away: stats.fouls_away },
+        { label: 'Sarı Kart', home: stats.yellow_cards_home, away: stats.yellow_cards_away },
+        { label: 'Kırmızı Kart', home: stats.red_cards_home, away: stats.red_cards_away },
+    ];
+
+    return rows.map((r) => buildStatRow(r)).join('');
+}
+
+function buildStatRow(row) {
+    const home = Number(row.home) || 0;
+    const away = Number(row.away) || 0;
+    const total = home + away;
+    const hPct = total > 0 ? (home * 100) / total : 50;
+    const aPct = total > 0 ? (away * 100) / total : 50;
+    const suffix = row.unit || '';
+    const displayH = `${formatNumber(home, row.decimals)}${suffix}`;
+    const displayA = `${formatNumber(away, row.decimals)}${suffix}`;
+
+    return `
+        <div class="stat-row">
+            <div class="stat-label">${escHtml(row.label)}</div>
+            <div class="stat-bars">
+                <span class="stat-value stat-value-home">${displayH}</span>
+                <div class="stat-bar">
+                    <div class="stat-bar-home" style="width:${hPct.toFixed(1)}%"></div>
+                    <div class="stat-bar-away" style="width:${aPct.toFixed(1)}%"></div>
+                </div>
+                <span class="stat-value stat-value-away">${displayA}</span>
+            </div>
+        </div>`;
+}
+
+function renderLive2Form(match, form) {
+    const home = (form || {}).home || {};
+    const away = (form || {}).away || {};
+
+    if (!home.form && !away.form && !home.value && !away.value) {
+        return '<div class="live-details-empty">Form veya kadro verisi bulunamadı</div>';
+    }
+
+    const renderChips = (list) => {
+        if (!list || !list.length) return '<span class="form-empty">-</span>';
+        return list.map((ch) => {
+            const letter = String(ch).toUpperCase()[0] || '-';
+            const cls = letter === 'W' ? 'form-win' : letter === 'L' ? 'form-loss' : 'form-draw';
+            return `<span class="form-chip ${cls}">${letter}</span>`;
+        }).join('');
+    };
+
+    const sideHtml = (teamName, side) => {
+        const position = side.position != null ? `#${escHtml(side.position)}` : '-';
+        const value = side.value || '-';
+        const rating = side.avg_rating != null ? formatNumber(side.avg_rating) : '-';
+        return `
+            <div class="live2-team-context">
+                <div class="form-team-name">${escHtml(teamName)}</div>
+                <div class="form-chips">${renderChips(side.form)}</div>
+                <div class="form-meta">Sıralama: <strong>${position}</strong> • Kadro değeri: <strong>${escHtml(value)}</strong> • Puan: <strong>${rating}</strong></div>
+            </div>`;
+    };
+
+    return `
+        <div class="live2-form-grid">
+            ${sideHtml(match.home_team || 'Ev', home)}
+            ${sideHtml(match.away_team || 'Dep', away)}
+        </div>`;
+}
+
+function updateLive2Bulk() {
+    const count = selectedLive2.size;
+    setText('#selected-count-live2', `${count} seçili`);
+    const betBtn = $('#btn-bulk-bet-live2');
+    const ignBtn = $('#btn-bulk-ignore-live2');
+    const folBtn = $('#btn-bulk-follow-live2');
+    if (betBtn) betBtn.disabled = count === 0;
+    if (ignBtn) ignBtn.disabled = count === 0;
+    if (folBtn) folBtn.disabled = count === 0;
+}
+
+async function setLive2Status(eventId, status) {
+    const match = liveMatches2.find((m) => m.event_id === eventId);
+    if (!match) return;
+    const newStatus = match.status === status ? 'new' : status;
+
+    const result = await apiPost(API.liveMatchStatus(eventId), { status: newStatus });
+    if (!result || !result.ok) return;
+
+    match.status = newStatus;
+    renderLive2Matches();
+    toast(`Durum güncellendi: ${statusLabel(newStatus)}`);
+}
+
+async function bulkLive2Status(status) {
+    const eventIds = [...selectedLive2];
+    if (!eventIds.length) return;
+
+    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status });
+    if (!result || !result.ok) return;
+
+    eventIds.forEach((eid) => {
+        const match = liveMatches2.find((m) => m.event_id === eid);
+        if (match) match.status = status;
+    });
+
+    renderLive2Matches();
+    toast(`${eventIds.length} maç güncellendi: ${statusLabel(status)}`);
+}
+
+const btnFetchLive2 = $('#btn-fetch-live2');
+if (btnFetchLive2) btnFetchLive2.addEventListener('click', loadLiveMatches2);
+
+const filterLive2 = $('#filter-live2-status');
+if (filterLive2) filterLive2.addEventListener('change', renderLive2Matches);
+
+const searchLive2 = $('#search-live2');
+if (searchLive2) searchLive2.addEventListener('input', renderLive2Matches);
+
+const selectAllLive2 = $('#select-all-live2');
+if (selectAllLive2) {
+    selectAllLive2.addEventListener('change', (event) => {
+        const checked = event.target.checked;
+        $$('.chk-live2').forEach((checkbox) => {
+            checkbox.checked = checked;
+            const eid = checkbox.dataset.eid;
+            if (checked) selectedLive2.add(eid);
+            else selectedLive2.delete(eid);
+        });
+        updateLive2Bulk();
+    });
+}
+
+const btnBulkBetLive2 = $('#btn-bulk-bet-live2');
+if (btnBulkBetLive2) btnBulkBetLive2.addEventListener('click', () => bulkLive2Status('bet_placed'));
+const btnBulkIgnoreLive2 = $('#btn-bulk-ignore-live2');
+if (btnBulkIgnoreLive2) btnBulkIgnoreLive2.addEventListener('click', () => bulkLive2Status('ignored'));
+const btnBulkFollowLive2 = $('#btn-bulk-follow-live2');
+if (btnBulkFollowLive2) btnBulkFollowLive2.addEventListener('click', () => bulkLive2Status('following'));
+
 // Hook sortable headers for live-table (initSortableHeaders runs once and
 // only dispatches to anomaly/upcoming; extend its dispatcher):
 function refreshVisibleLiveMatches() {
@@ -1371,11 +1644,13 @@ $('#btn-clear-database').addEventListener('click', async () => {
         analyses = [];
         upcomingMatches = [];
         liveMatches = [];
+        liveMatches2 = [];
         deletedAnomalies = [];
         renderAnomalies();
         renderAnalyses();
         renderUpcoming();
         renderLiveMatches();
+        renderLive2Matches();
         renderDeletedAnomalies();
         updateOverview();
         touchLastUpdated();

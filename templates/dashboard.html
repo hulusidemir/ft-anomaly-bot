@@ -33,6 +33,7 @@
                 <nav class="tabs">
                     <button class="tab active" data-tab="anomalies">Anomaliler</button>
                     <button class="tab" data-tab="live">Canlı Maçlar</button>
+                    <button class="tab" data-tab="live2">Canlı Maçlar-2</button>
                     <button class="tab" data-tab="analyses">Maç Analizleri</button>
                     <button class="tab" data-tab="upcoming">Yaklaşan Maçlar</button>
                     <button class="tab" data-tab="deleted">Silinen Maçlar</button>
@@ -124,6 +125,41 @@
                                 <tr><td colspan="6" class="empty-msg">Canlı maçları görmek için "Güncel Canlı Maçları Çek" butonuna tıklayın.</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </section>
+
+                <section id="tab-live2" class="tab-content">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <select id="filter-live2-status" class="input-select">
+                                <option value="">Tüm Durumlar</option>
+                                <option value="new">Yeni</option>
+                                <option value="bet_placed">Bahis Oynandı</option>
+                                <option value="ignored">Gözardı Edildi</option>
+                                <option value="following">Takip Ediliyor</option>
+                            </select>
+                            <input type="text" id="search-live2" class="input-search" placeholder="Takım, lig veya skor ara">
+                            <button id="btn-fetch-live2" class="btn btn-secondary">Canlı Maçları Çek</button>
+                            <span id="live2-count" class="selected-count">0 maç</span>
+                        </div>
+
+                        <div class="toolbar-right">
+                            <span id="selected-count-live2" class="selected-count">0 seçili</span>
+                            <button id="btn-bulk-bet-live2" class="btn btn-action" disabled>Bahis Oynandı</button>
+                            <button id="btn-bulk-ignore-live2" class="btn btn-action" disabled>Gözardı Et</button>
+                            <button id="btn-bulk-follow-live2" class="btn btn-action" disabled>Takip Et</button>
+                        </div>
+                    </div>
+
+                    <div class="live2-select-row">
+                        <label class="live2-select-all">
+                            <input type="checkbox" id="select-all-live2">
+                            <span>Tümünü seç</span>
+                        </label>
+                    </div>
+
+                    <div id="live2-list" class="live2-list">
+                        <div class="empty-msg">Canlı maçları görmek için "Canlı Maçları Çek" butonuna tıklayın.</div>
                     </div>
                 </section>
 
