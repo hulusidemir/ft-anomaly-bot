@@ -1460,10 +1460,14 @@ async function loadLive2StatsProgressively(runId) {
             const item = liveMatches2[nextIndex];
             nextIndex += 1;
             if (!item) continue;
-            const data = await apiFetchQuiet(API.liveMatch2Stats(item.event_id));
+            let data = await apiFetchQuiet(API.liveMatch2Stats(item.event_id));
+            if (!data) {
+                const fallback = await apiFetchQuiet(API.liveMatchDetails(item.event_id));
+                data = fallback ? { stats: fallback.stats || null, error: '' } : null;
+            }
             if (runId !== live2StatsRun) return;
             item.stats = data && data.stats ? data.stats : null;
-            item.statsError = data ? '' : 'İstatistik verisi alınamadı';
+            item.statsError = data ? (data.error || '') : 'İstatistik servisine ulaşılamadı';
             item.statsLoading = false;
             updateLive2StatsBlock(item.event_id);
         }

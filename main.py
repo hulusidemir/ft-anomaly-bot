@@ -438,10 +438,15 @@ async def api_live_matches_2():
 @app.get("/api/live-matches-2/{event_id}/stats")
 async def api_live_match_2_stats(event_id: str):
     """Return only match statistics for the fast text-focused live-2 view."""
-    stats = await scraper.get_match_statistics(event_id)
+    try:
+        stats = await scraper.get_match_statistics(event_id)
+    except Exception as e:
+        logger.error("Live-2 stats failed for event %s: %s", event_id, e, exc_info=True)
+        return {"stats": None, "error": "İstatistik servisi hata verdi"}
+
     if not stats:
-        return {"stats": None}
-    return {"stats": stats.to_dict()}
+        return {"stats": None, "error": ""}
+    return {"stats": stats.to_dict(), "error": ""}
 
 
 @app.post("/api/live-matches/{event_id}/status")
