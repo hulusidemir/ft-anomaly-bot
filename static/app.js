@@ -46,6 +46,7 @@ let liveMatches = [];
 let liveMatches2 = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
+let live2DetailsRun = 0;
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
@@ -57,6 +58,7 @@ const selectedDeleted = new Set();
 const liveDetailsCache = new Map();
 const liveDetailsInFlight = new Map();
 const expandedLiveRows = new Set();
+const LIVE2_DETAIL_CONCURRENCY = 2;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -118,6 +120,20 @@ async function apiFetch(url, opts = {}) {
         return await response.json();
     } catch (error) {
         toast(`İstek başarısız: ${error.message}`, true);
+        return null;
+    }
+}
+
+async function apiFetchQuiet(url, opts = {}) {
+    try {
+        const response = await fetch(url, {
+            headers: { 'Content-Type': 'application/json' },
+            ...opts,
+        });
+
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (_) {
         return null;
     }
 }
@@ -1224,6 +1240,8 @@ if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiv
 async function loadLiveMatches2() {
     const list = $('#live2-list');
     const button = $('#btn-fetch-live2');
+    const runId = live2DetailsRun + 1;
+    live2DetailsRun = runId;
     if (list) {
         list.innerHTML = '<div class="empty-msg">Canlı maçlar çekiliyor...</div>';
     }
@@ -1238,9 +1256,18 @@ async function loadLiveMatches2() {
         return;
     }
 
-    liveMatches2 = Array.isArray(data) ? data : [];
+    liveMatches2 = (Array.isArray(data) ? data : []).map((item) => ({
+        ...item,
+        details: null,
+        detailsLoading: true,
+        detailsError: '',
+    }));
     renderLive2Matches();
     touchLastUpdated();
+    if (liveMatches2.length) {
+        toast(`${liveMatches2.length} canlı maç bulundu, detaylar yükleniyor`);
+        loadLive2DetailsProgressively(runId);
+    }
 }
 
 function getVisibleLive2Matches() {
@@ -1288,12 +1315,6 @@ function buildLive2CardHtml(item) {
     const statusValue = item.status || 'new';
     const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
     const details = item.details || {};
-    const form = details.form || {};
-    const votes = details.votes || {};
-    const odds = details.odds || {};
-    const statsHtml = renderLive2Stats(details.stats);
-    const formHtml = renderLive2Form(item, form);
-    const expectationHtml = renderExpectationBlock(item, votes, odds);
     const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Canlı';
 
     return `
@@ -1319,19 +1340,93 @@ function buildLive2CardHtml(item) {
                     <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
                 </div>
             </div>
-            <div class="live2-body">
+            ${renderLive2CardBody(item)}
+        </article>`;
+}
+
+function renderLive2CardBody(item) {
+    if (item.detailsLoading) {
+        return `
+            <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
                 <section class="live2-stats">
                     <h3 class="live-details-title">Maç İstatistikleri</h3>
-                    ${statsHtml}
+                    <div class="live-details-loading">İstatistikler yükleniyor...</div>
                 </section>
                 <section class="live2-context">
                     <h3 class="live-details-title">Form ve Kadro</h3>
-                    ${formHtml}
-                    <h3 class="live-details-title live2-title-spaced">Beklenti</h3>
-                    ${expectationHtml}
+                    <div class="live-details-loading">Form, kadro ve beklenti yükleniyor...</div>
                 </section>
-            </div>
-        </article>`;
+            </div>`;
+    }
+
+    if (item.detailsError) {
+        return `
+            <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
+                <section class="live2-stats">
+                    <h3 class="live-details-title">Maç İstatistikleri</h3>
+                    <div class="live-details-empty">${escHtml(item.detailsError)}</div>
+                </section>
+                <section class="live2-context">
+                    <h3 class="live-details-title">Form ve Kadro</h3>
+                    <div class="live-details-empty">Detay verisi alınamadı</div>
+                </section>
+            </div>`;
+    }
+
+    const details = item.details || {};
+    const form = details.form || {};
+    const votes = details.votes || {};
+    const odds = details.odds || {};
+    return `
+        <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
+            <section class="live2-stats">
+                <h3 class="live-details-title">Maç İstatistikleri</h3>
+                ${renderLive2Stats(details.stats)}
+            </section>
+            <section class="live2-context">
+                <h3 class="live-details-title">Form ve Kadro</h3>
+                ${renderLive2Form(item, form)}
+                <h3 class="live-details-title live2-title-spaced">Beklenti</h3>
+                ${renderExpectationBlock(item, votes, odds)}
+            </section>
+        </div>`;
+}
+
+function updateLive2CardBody(eventId) {
+    const item = liveMatches2.find((match) => match.event_id === eventId);
+    if (!item) return;
+    const body = document.querySelector(`.live2-card[data-eid="${CSS.escape(eventId)}"] .live2-body`);
+    if (body) body.outerHTML = renderLive2CardBody(item);
+}
+
+async function loadLive2DetailsProgressively(runId) {
+    let nextIndex = 0;
+    const worker = async () => {
+        while (runId === live2DetailsRun && nextIndex < liveMatches2.length) {
+            const item = liveMatches2[nextIndex];
+            nextIndex += 1;
+            if (!item) continue;
+            const data = await apiFetchQuiet(API.liveMatchDetails(item.event_id));
+            if (runId !== live2DetailsRun) return;
+            if (data) {
+                item.details = data;
+                item.detailsError = '';
+            } else {
+                item.detailsError = 'Detay verisi alınamadı';
+            }
+            item.detailsLoading = false;
+            updateLive2CardBody(item.event_id);
+        }
+    };
+
+    const workers = Array.from(
+        { length: Math.min(LIVE2_DETAIL_CONCURRENCY, liveMatches2.length) },
+        worker
+    );
+    await Promise.all(workers);
+    if (runId === live2DetailsRun && liveMatches2.length) {
+        toast('Canlı Maçlar-2 detayları güncellendi');
+    }
 }
 
 function renderLive2Stats(stats) {

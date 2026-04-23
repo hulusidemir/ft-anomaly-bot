@@ -399,8 +399,12 @@ async def api_live_match_details(event_id: str):
 
 @app.get("/api/live-matches-2")
 async def api_live_matches_2():
-    """Manual live-match research view: fresh list + per-match context."""
-    matches = await scraper.get_live_matches(retries=2)
+    """Manual live-match research view: fresh live list only.
+
+    Details are intentionally loaded per match from the dashboard so this
+    request cannot hang while dozens of Sofascore detail endpoints are fetched.
+    """
+    matches = await scraper.get_live_matches(retries=1)
     fetch_error = scraper.last_live_fetch_error
     if fetch_error:
         detail = fetch_error.get("message", "Canlı maç listesi alınamadı")
@@ -413,16 +417,9 @@ async def api_live_matches_2():
 
     event_ids = [m.event_id for m in matches]
     actions = await get_live_actions(event_ids) if event_ids else {}
-    detail_results = await asyncio.gather(
-        *(scraper.get_live_match_details(m.event_id) for m in matches),
-        return_exceptions=True,
-    )
 
     payload = []
-    for m, details in zip(matches, detail_results):
-        if isinstance(details, Exception):
-            logger.warning("Live-2 details failed for event %s: %s", m.event_id, details)
-            details = {"stats": None, "form": {"home": {}, "away": {}}, "votes": {}, "odds": {}}
+    for m in matches:
         payload.append({
             "event_id": m.event_id,
             "home_team": m.home_team,
@@ -433,7 +430,7 @@ async def api_live_matches_2():
             "league": m.league,
             "status_desc": m.status_desc,
             "status": actions.get(m.event_id, "new"),
-            "details": details,
+            "details": None,
         })
     return payload
 
