@@ -435,6 +435,15 @@ async def api_live_matches_2():
     return payload
 
 
+@app.get("/api/live-matches-2/{event_id}/stats")
+async def api_live_match_2_stats(event_id: str):
+    """Return only match statistics for the fast text-focused live-2 view."""
+    stats = await scraper.get_match_statistics(event_id)
+    if not stats:
+        return {"stats": None}
+    return {"stats": stats.to_dict()}
+
+
 @app.post("/api/live-matches/{event_id}/status")
 async def api_live_match_status(event_id: str, request: Request):
     body = await request.json()

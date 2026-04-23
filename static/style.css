@@ -1842,6 +1842,36 @@ tbody tr.state-following.anomaly-row:hover td {
     font-weight: 700;
 }
 
+.live2-stats-text {
+    padding: 0 18px 16px;
+    color: var(--text-soft);
+    font-size: 0.9rem;
+    line-height: 1.65;
+}
+
+.live2-analyst-text {
+    padding: 12px 0 10px;
+    color: var(--text);
+    border-top: 1px dashed var(--border-soft);
+}
+
+.live2-analyst-text strong,
+.live2-stat-lines strong {
+    color: var(--text-muted);
+}
+
+.live2-stat-lines {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 18px;
+}
+
+.live2-stat-footnote {
+    margin-top: 10px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
 .live2-body {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
@@ -1892,5 +1922,9 @@ tbody tr.state-following.anomaly-row:hover td {
     .live2-body {
         grid-template-columns: 1fr;
         gap: 18px;
+    }
+
+    .live2-stat-lines {
+        grid-template-columns: 1fr;
     }
 }

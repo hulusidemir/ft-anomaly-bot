@@ -15,6 +15,7 @@ const API = {
     clearAnalyses: '/api/analyses/clear',
     liveMatches: '/api/live-matches',
     liveMatches2: '/api/live-matches-2',
+    liveMatch2Stats: (id) => `/api/live-matches-2/${encodeURIComponent(id)}/stats`,
     liveMatchDetails: (id) => `/api/live-matches/${encodeURIComponent(id)}/details`,
     liveMatchStatus: (id) => `/api/live-matches/${encodeURIComponent(id)}/status`,
     liveMatchBulkStatus: '/api/live-matches/bulk-status',
@@ -46,6 +47,7 @@ let liveMatches = [];
 let liveMatches2 = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
+let live2StatsRun = 0;
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
@@ -57,6 +59,7 @@ const selectedDeleted = new Set();
 const liveDetailsCache = new Map();
 const liveDetailsInFlight = new Map();
 const expandedLiveRows = new Set();
+const LIVE2_STATS_CONCURRENCY = 2;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -118,6 +121,20 @@ async function apiFetch(url, opts = {}) {
         return await response.json();
     } catch (error) {
         toast(`İstek başarısız: ${error.message}`, true);
+        return null;
+    }
+}
+
+async function apiFetchQuiet(url, opts = {}) {
+    try {
+        const response = await fetch(url, {
+            headers: { 'Content-Type': 'application/json' },
+            ...opts,
+        });
+
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (_) {
         return null;
     }
 }
@@ -1224,6 +1241,8 @@ if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiv
 async function loadLiveMatches2() {
     const list = $('#live2-list');
     const button = $('#btn-fetch-live2');
+    const runId = live2StatsRun + 1;
+    live2StatsRun = runId;
     if (list) {
         list.innerHTML = '<div class="empty-msg">Canlı maçlar çekiliyor...</div>';
     }
@@ -1238,11 +1257,17 @@ async function loadLiveMatches2() {
         return;
     }
 
-    liveMatches2 = Array.isArray(data) ? data : [];
+    liveMatches2 = (Array.isArray(data) ? data : []).map((item) => ({
+        ...item,
+        stats: null,
+        statsLoading: true,
+        statsError: '',
+    }));
     renderLive2Matches();
     touchLastUpdated();
     if (liveMatches2.length) {
-        toast(`${liveMatches2.length} canlı maç listelendi`);
+        toast(`${liveMatches2.length} canlı maç listelendi, istatistikler çekiliyor`);
+        loadLive2StatsProgressively(runId);
     }
 }
 
@@ -1321,7 +1346,137 @@ function buildLive2CardHtml(item) {
                 <span><strong>Dakika:</strong> ${item.minute || 0}'</span>
                 <span><strong>Lig:</strong> ${escHtml(item.league || '-')}</span>
             </div>
+            <div class="live2-stats-text" data-live2-stats="${escHtml(item.event_id)}">
+                ${renderLive2StatsText(item)}
+            </div>
         </article>`;
+}
+
+function renderLive2StatsText(item) {
+    if (item.statsLoading) {
+        return '<div class="live-details-loading">İstatistikler çekiliyor...</div>';
+    }
+    if (item.statsError) {
+        return `<div class="live-details-empty">${escHtml(item.statsError)}</div>`;
+    }
+    const stats = item.stats || {};
+    if (!hasLive2Stats(stats)) {
+        return '<div class="live-details-empty">Bu maç için istatistik verisi henüz yok</div>';
+    }
+
+    const home = item.home_team || 'Ev';
+    const away = item.away_team || 'Dep';
+    const lines = [];
+
+    addLive2Line(lines, 'Topa sahip olma', stats.possession_home, stats.possession_away, '%');
+    addLive2Line(lines, 'Toplam şut', stats.total_shots_home, stats.total_shots_away);
+    addLive2Line(lines, 'Kaleyi bulan şut', stats.shots_on_target_home, stats.shots_on_target_away);
+    addLive2Line(lines, 'Kaleyi bulmayan şut', stats.shots_off_target_home, stats.shots_off_target_away);
+    addLive2Line(lines, 'Bloklanan şut', stats.blocked_shots_home, stats.blocked_shots_away);
+    addLive2Line(lines, 'Tehlikeli atak', stats.dangerous_attacks_home, stats.dangerous_attacks_away);
+    addLive2Line(lines, 'Beklenen gol (xG)', stats.expected_goals_home, stats.expected_goals_away, '', 2);
+    addLive2Line(lines, 'Büyük şans', stats.big_chances_home, stats.big_chances_away);
+    addLive2Line(lines, 'Korner', stats.corner_kicks_home, stats.corner_kicks_away);
+    addLive2Line(lines, 'Ofsayt', stats.offsides_home, stats.offsides_away);
+    addLive2Line(lines, 'Faul', stats.fouls_home, stats.fouls_away);
+    addLive2Line(lines, 'Sarı kart', stats.yellow_cards_home, stats.yellow_cards_away);
+    addLive2Line(lines, 'Kırmızı kart', stats.red_cards_home, stats.red_cards_away);
+
+    const passHome = statPercent(stats.pass_accuracy_home, passAccuracy(stats.accurate_passes_home, stats.total_passes_home));
+    const passAway = statPercent(stats.pass_accuracy_away, passAccuracy(stats.accurate_passes_away, stats.total_passes_away));
+    addLive2Line(lines, 'Pas isabeti', passHome, passAway, '%');
+
+    return `
+        <div class="live2-analyst-text">
+            <strong>Analist özeti:</strong> ${escHtml(buildLive2AnalystNote(item, stats))}
+        </div>
+        <div class="live2-stat-lines">
+            ${lines.map((line) => `<div>${escHtml(line)}</div>`).join('')}
+        </div>
+        <div class="live2-stat-footnote">Karşılaştırma sırası: ${escHtml(home)} - ${escHtml(away)}</div>`;
+}
+
+function hasLive2Stats(stats) {
+    return [
+        stats.possession_home, stats.possession_away,
+        stats.total_shots_home, stats.total_shots_away,
+        stats.shots_on_target_home, stats.shots_on_target_away,
+        stats.shots_off_target_home, stats.shots_off_target_away,
+        stats.blocked_shots_home, stats.blocked_shots_away,
+        stats.dangerous_attacks_home, stats.dangerous_attacks_away,
+        stats.expected_goals_home, stats.expected_goals_away,
+        stats.big_chances_home, stats.big_chances_away,
+        stats.corner_kicks_home, stats.corner_kicks_away,
+    ].some((value) => Number(value) > 0);
+}
+
+function addLive2Line(lines, label, homeValue, awayValue, unit = '', decimals = null) {
+    const home = Number(homeValue) || 0;
+    const away = Number(awayValue) || 0;
+    if (home <= 0 && away <= 0) return;
+    lines.push(`${label}: ${formatNumber(home, decimals)}${unit} - ${formatNumber(away, decimals)}${unit}`);
+}
+
+function buildLive2AnalystNote(item, stats) {
+    const home = item.home_team || 'Ev sahibi';
+    const away = item.away_team || 'Deplasman';
+    const homePressure = (
+        (Number(stats.shots_on_target_home) || 0) * 3
+        + (Number(stats.total_shots_home) || 0)
+        + (Number(stats.dangerous_attacks_home) || 0) / 4
+        + (Number(stats.expected_goals_home) || 0) * 4
+        + (Number(stats.big_chances_home) || 0) * 2
+    );
+    const awayPressure = (
+        (Number(stats.shots_on_target_away) || 0) * 3
+        + (Number(stats.total_shots_away) || 0)
+        + (Number(stats.dangerous_attacks_away) || 0) / 4
+        + (Number(stats.expected_goals_away) || 0) * 4
+        + (Number(stats.big_chances_away) || 0) * 2
+    );
+    const diff = Math.abs(homePressure - awayPressure);
+    if (diff < 4) {
+        return 'Baskı dengeli görünüyor; tek bir şut metriğine göre hüküm vermemek gerekir.';
+    }
+    const leader = homePressure > awayPressure ? home : away;
+    const follower = homePressure > awayPressure ? away : home;
+    if (diff >= 14) {
+        return `${leader} belirgin baskı kuruyor; ${follower} savunmada daha fazla reaksiyon vermek zorunda kalmış.`;
+    }
+    return `${leader} tarafında hafif/orta seviye üstünlük var; isabetli şut ve tehlikeli atak trendi takip edilmeli.`;
+}
+
+function updateLive2StatsBlock(eventId) {
+    const item = liveMatches2.find((match) => match.event_id === eventId);
+    if (!item) return;
+    const block = document.querySelector(`.live2-card[data-eid="${CSS.escape(eventId)}"] .live2-stats-text`);
+    if (block) block.innerHTML = renderLive2StatsText(item);
+}
+
+async function loadLive2StatsProgressively(runId) {
+    let nextIndex = 0;
+    const worker = async () => {
+        while (runId === live2StatsRun && nextIndex < liveMatches2.length) {
+            const item = liveMatches2[nextIndex];
+            nextIndex += 1;
+            if (!item) continue;
+            const data = await apiFetchQuiet(API.liveMatch2Stats(item.event_id));
+            if (runId !== live2StatsRun) return;
+            item.stats = data && data.stats ? data.stats : null;
+            item.statsError = data ? '' : 'İstatistik verisi alınamadı';
+            item.statsLoading = false;
+            updateLive2StatsBlock(item.event_id);
+        }
+    };
+
+    const workers = Array.from(
+        { length: Math.min(LIVE2_STATS_CONCURRENCY, liveMatches2.length) },
+        worker
+    );
+    await Promise.all(workers);
+    if (runId === live2StatsRun && liveMatches2.length) {
+        toast('Canlı Maçlar-2 istatistikleri güncellendi');
+    }
 }
 
 function updateLive2Bulk() {
