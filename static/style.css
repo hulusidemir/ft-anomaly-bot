@@ -1799,6 +1799,10 @@ tbody tr.state-following.anomaly-row:hover td {
     border-bottom: 1px solid var(--border-soft);
 }
 
+.live-detection-card .live2-card-head {
+    grid-template-columns: minmax(220px, 1fr) auto auto;
+}
+
 .live2-check {
     display: inline-flex;
     align-items: center;
@@ -1911,6 +1915,10 @@ tbody tr.state-following.anomaly-row:hover td {
 
     .live2-card-head {
         grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .live-detection-card .live2-card-head {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .live2-scorebox,

@@ -16,6 +16,7 @@ const API = {
     liveMatches: '/api/live-matches',
     liveMatches2: '/api/live-matches-2',
     liveMatch2Stats: (id) => `/api/live-matches-2/${encodeURIComponent(id)}/stats`,
+    liveDetections: '/api/live-detections',
     liveMatchDetails: (id) => `/api/live-matches/${encodeURIComponent(id)}/details`,
     liveMatchStatus: (id) => `/api/live-matches/${encodeURIComponent(id)}/status`,
     liveMatchBulkStatus: '/api/live-matches/bulk-status',
@@ -45,6 +46,7 @@ let analyses = [];
 let upcomingMatches = [];
 let liveMatches = [];
 let liveMatches2 = [];
+let liveDetections = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
 let live2StatsRun = 0;
@@ -81,6 +83,7 @@ $$('.tab').forEach((tab) => {
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
         if (tab.dataset.tab === 'live' && !liveMatches.length) loadLiveMatches();
+        if (tab.dataset.tab === 'detections') loadLiveDetections();
         if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
     });
 });
@@ -300,6 +303,19 @@ function filterBySearch(data, query, getSearchText) {
 function sofascoreEventUrl(eventId) {
     if (!eventId) return '#';
     return `https://www.sofascore.com/event/${encodeURIComponent(eventId)}`;
+}
+
+function liveMatchSnapshot(match) {
+    return {
+        event_id: match.event_id,
+        home_team: match.home_team || '',
+        away_team: match.away_team || '',
+        score_home: Number(match.score_home) || 0,
+        score_away: Number(match.score_away) || 0,
+        minute: Number(match.minute) || 0,
+        league: match.league || '',
+        status_desc: match.status_desc || '',
+    };
 }
 
 async function loadAnomalies() {
@@ -1182,7 +1198,10 @@ async function setLiveStatus(eventId, status) {
     if (!match) return;
     const newStatus = match.status === status ? 'new' : status;
 
-    const result = await apiPost(API.liveMatchStatus(eventId), { status: newStatus });
+    const result = await apiPost(API.liveMatchStatus(eventId), {
+        status: newStatus,
+        match: liveMatchSnapshot(match),
+    });
     if (!result || !result.ok) return;
 
     match.status = newStatus;
@@ -1194,7 +1213,11 @@ async function bulkLiveStatus(status) {
     const eventIds = [...selectedLive];
     if (!eventIds.length) return;
 
-    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status });
+    const matches = eventIds
+        .map((eid) => liveMatches.find((m) => m.event_id === eid))
+        .filter(Boolean)
+        .map(liveMatchSnapshot);
+    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status, matches });
     if (!result || !result.ok) return;
 
     eventIds.forEach((eid) => {
@@ -1499,7 +1522,10 @@ async function setLive2Status(eventId, status) {
     if (!match) return;
     const newStatus = match.status === status ? 'new' : status;
 
-    const result = await apiPost(API.liveMatchStatus(eventId), { status: newStatus });
+    const result = await apiPost(API.liveMatchStatus(eventId), {
+        status: newStatus,
+        match: liveMatchSnapshot(match),
+    });
     if (!result || !result.ok) return;
 
     match.status = newStatus;
@@ -1511,7 +1537,11 @@ async function bulkLive2Status(status) {
     const eventIds = [...selectedLive2];
     if (!eventIds.length) return;
 
-    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status });
+    const matches = eventIds
+        .map((eid) => liveMatches2.find((m) => m.event_id === eid))
+        .filter(Boolean)
+        .map(liveMatchSnapshot);
+    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status, matches });
     if (!result || !result.ok) return;
 
     eventIds.forEach((eid) => {
@@ -1552,6 +1582,98 @@ const btnBulkIgnoreLive2 = $('#btn-bulk-ignore-live2');
 if (btnBulkIgnoreLive2) btnBulkIgnoreLive2.addEventListener('click', () => bulkLive2Status('ignored'));
 const btnBulkFollowLive2 = $('#btn-bulk-follow-live2');
 if (btnBulkFollowLive2) btnBulkFollowLive2.addEventListener('click', () => bulkLive2Status('following'));
+
+/* ===== Live Detections ===== */
+
+async function loadLiveDetections() {
+    const list = $('#detections-list');
+    if (list) {
+        list.innerHTML = '<div class="empty-msg">Takip edilen maçlar yükleniyor...</div>';
+    }
+    const data = await apiFetch(API.liveDetections);
+    if (!data) {
+        liveDetections = [];
+        renderLiveDetections('Canlı tespit listesi alınamadı');
+        return;
+    }
+    liveDetections = Array.isArray(data) ? data : [];
+    renderLiveDetections();
+    touchLastUpdated();
+}
+
+function getVisibleLiveDetections() {
+    const searchQuery = ($('#search-detections') || {}).value || '';
+    return filterBySearch(liveDetections, searchQuery, (item) =>
+        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
+    );
+}
+
+function renderLiveDetections(emptyText = 'Takipte maç bulunmuyor') {
+    const list = $('#detections-list');
+    if (!list) return;
+    const filtered = getVisibleLiveDetections();
+    setText('#detections-count', `${liveDetections.length} maç`);
+
+    if (!filtered.length) {
+        list.innerHTML = `<div class="empty-msg">${escHtml(emptyText)}</div>`;
+        return;
+    }
+
+    list.innerHTML = filtered.map((item) => buildLiveDetectionCardHtml(item)).join('');
+}
+
+function buildLiveDetectionCardHtml(item) {
+    const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Takipte';
+    const activeNow = liveMatches2.some((m) => m.event_id === item.event_id)
+        || liveMatches.some((m) => m.event_id === item.event_id);
+    const marker = activeNow ? 'Aktif canlı listede' : 'Takip kayıtlı';
+
+    return `
+        <article class="live2-card live-detection-card state-following" data-eid="${escHtml(item.event_id)}">
+            <div class="live2-card-head">
+                <div class="live2-match">
+                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
+                        ${escHtml(item.home_team || 'Bilinmeyen')} vs ${escHtml(item.away_team || 'Bilinmeyen')}
+                    </a>
+                    <div class="live2-meta">${escHtml(item.league || '-')} • ${statusDesc} • Etkinlik ID: ${escHtml(item.event_id)}</div>
+                </div>
+                <div class="live2-scorebox">
+                    <span class="score-pill">${Number(item.score_home) || 0} - ${Number(item.score_away) || 0}</span>
+                    <span class="table-tag live-minute">${Number(item.minute) || 0}'</span>
+                    <span class="upcoming-status-label">${marker}</span>
+                </div>
+                <div class="row-actions row-actions-icons live2-actions">
+                    <button class="icon-btn icon-btn-bet" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
+                    <button class="icon-btn icon-btn-ignore" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
+                    <button class="icon-btn icon-btn-restore" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'new')" title="Takipten çıkar" aria-label="Takipten çıkar">${ICONS.restore}</button>
+                </div>
+            </div>
+            <div class="live2-text-data">
+                <span><strong>Durum:</strong> ${statusDesc}</span>
+                <span><strong>Skor:</strong> ${Number(item.score_home) || 0} - ${Number(item.score_away) || 0}</span>
+                <span><strong>Dakika:</strong> ${Number(item.minute) || 0}'</span>
+                <span><strong>Son güncelleme:</strong> ${formatCreatedAt(item.updated_at)}</span>
+            </div>
+        </article>`;
+}
+
+async function setLiveDetectionStatus(eventId, status) {
+    const match = liveDetections.find((m) => m.event_id === eventId);
+    if (!match) return;
+    const result = await apiPost(API.liveMatchStatus(eventId), {
+        status,
+        match: liveMatchSnapshot(match),
+    });
+    if (!result || !result.ok) return;
+    toast(`Durum güncellendi: ${statusLabel(status)}`);
+    await loadLiveDetections();
+}
+
+const btnRefreshDetections = $('#btn-refresh-detections');
+if (btnRefreshDetections) btnRefreshDetections.addEventListener('click', loadLiveDetections);
+
+const searchDetections = $('#search-detections');
+if (searchDetections) searchDetections.addEventListener('input', renderLiveDetections);
 
 // Hook sortable headers for live-table (initSortableHeaders runs once and
 // only dispatches to anomaly/upcoming; extend its dispatcher):
@@ -1709,12 +1831,14 @@ $('#btn-clear-database').addEventListener('click', async () => {
         upcomingMatches = [];
         liveMatches = [];
         liveMatches2 = [];
+        liveDetections = [];
         deletedAnomalies = [];
         renderAnomalies();
         renderAnalyses();
         renderUpcoming();
         renderLiveMatches();
         renderLive2Matches();
+        renderLiveDetections();
         renderDeletedAnomalies();
         updateOverview();
         touchLastUpdated();

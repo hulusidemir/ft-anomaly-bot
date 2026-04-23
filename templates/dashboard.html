@@ -34,6 +34,7 @@
                     <button class="tab active" data-tab="anomalies">Anomaliler</button>
                     <button class="tab" data-tab="live">Canlı Maçlar</button>
                     <button class="tab" data-tab="live2">Canlı Maçlar-2</button>
+                    <button class="tab" data-tab="detections">Canlı Tespit</button>
                     <button class="tab" data-tab="analyses">Maç Analizleri</button>
                     <button class="tab" data-tab="upcoming">Yaklaşan Maçlar</button>
                     <button class="tab" data-tab="deleted">Silinen Maçlar</button>
@@ -160,6 +161,20 @@
 
                     <div id="live2-list" class="live2-list">
                         <div class="empty-msg">Canlı maçları görmek için "Canlı Maçları Çek" butonuna tıklayın.</div>
+                    </div>
+                </section>
+
+                <section id="tab-detections" class="tab-content">
+                    <div class="toolbar">
+                        <div class="toolbar-left">
+                            <input type="text" id="search-detections" class="input-search" placeholder="Takipteki takım, lig veya skor ara">
+                            <button id="btn-refresh-detections" class="btn btn-secondary">Listeyi Yenile</button>
+                            <span id="detections-count" class="selected-count">0 maç</span>
+                        </div>
+                    </div>
+
+                    <div id="detections-list" class="live2-list">
+                        <div class="empty-msg">Takip ettiğin canlı maçlar burada kalıcı olarak görünecek.</div>
                     </div>
                 </section>
 

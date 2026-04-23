@@ -25,7 +25,7 @@ from db import (
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
     clear_database,
-    get_live_actions, set_live_action, bulk_set_live_actions,
+    get_live_actions, set_live_action, bulk_set_live_actions, get_following_live_matches,
 )
 from workers import live_scan, upcoming_scan
 from scraper import scraper
@@ -449,13 +449,19 @@ async def api_live_match_2_stats(event_id: str):
     return {"stats": stats.to_dict(), "error": ""}
 
 
+@app.get("/api/live-detections")
+async def api_live_detections():
+    """Return persisted live matches marked as following."""
+    return await get_following_live_matches()
+
+
 @app.post("/api/live-matches/{event_id}/status")
 async def api_live_match_status(event_id: str, request: Request):
     body = await request.json()
     status = body.get("status")
     if status not in ("new", "bet_placed", "ignored", "following"):
         return JSONResponse({"error": "Invalid status"}, status_code=400)
-    await set_live_action(event_id, status)
+    await set_live_action(event_id, status, body.get("match"))
     return {"ok": True}
 
 
@@ -466,7 +472,12 @@ async def api_live_match_bulk_status(request: Request):
     status = body.get("status")
     if not event_ids or status not in ("new", "bet_placed", "ignored", "following"):
         return JSONResponse({"error": "Invalid request"}, status_code=400)
-    await bulk_set_live_actions(event_ids, status)
+    metadata_by_id = {
+        str(item.get("event_id")): item
+        for item in body.get("matches", [])
+        if item.get("event_id") is not None
+    }
+    await bulk_set_live_actions(event_ids, status, metadata_by_id)
     return {"ok": True}
 
 

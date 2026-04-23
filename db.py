@@ -69,7 +69,15 @@ async def init_db():
 
         CREATE TABLE IF NOT EXISTS live_match_actions (
             event_id TEXT PRIMARY KEY,
+            home_team TEXT DEFAULT '',
+            away_team TEXT DEFAULT '',
+            score_home INTEGER DEFAULT 0,
+            score_away INTEGER DEFAULT 0,
+            minute INTEGER DEFAULT 0,
+            league TEXT DEFAULT '',
+            status_desc TEXT DEFAULT '',
             status TEXT DEFAULT 'new',
+            created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );
     """)
@@ -92,6 +100,22 @@ async def init_db():
         await db.commit()
     except Exception:
         pass  # column already exists
+    # Migration: persist enough live-match metadata for the Canlı Tespit view.
+    for column_sql in (
+        "ALTER TABLE live_match_actions ADD COLUMN home_team TEXT DEFAULT ''",
+        "ALTER TABLE live_match_actions ADD COLUMN away_team TEXT DEFAULT ''",
+        "ALTER TABLE live_match_actions ADD COLUMN score_home INTEGER DEFAULT 0",
+        "ALTER TABLE live_match_actions ADD COLUMN score_away INTEGER DEFAULT 0",
+        "ALTER TABLE live_match_actions ADD COLUMN minute INTEGER DEFAULT 0",
+        "ALTER TABLE live_match_actions ADD COLUMN league TEXT DEFAULT ''",
+        "ALTER TABLE live_match_actions ADD COLUMN status_desc TEXT DEFAULT ''",
+        "ALTER TABLE live_match_actions ADD COLUMN created_at TEXT DEFAULT ''",
+    ):
+        try:
+            await db.execute(column_sql)
+            await db.commit()
+        except Exception:
+            pass  # column already exists
 
 
 # ---- Anomaly CRUD ----
@@ -432,33 +456,97 @@ async def get_live_actions(event_ids: list[str] | None = None) -> dict[str, str]
     return {r["event_id"]: r["status"] for r in rows}
 
 
-async def set_live_action(event_id: str, status: str):
+def _live_meta_values(meta: dict | None) -> tuple:
+    meta = meta or {}
+    return (
+        str(meta.get("home_team") or ""),
+        str(meta.get("away_team") or ""),
+        int(meta.get("score_home") or 0),
+        int(meta.get("score_away") or 0),
+        int(meta.get("minute") or 0),
+        str(meta.get("league") or ""),
+        str(meta.get("status_desc") or ""),
+    )
+
+
+async def set_live_action(event_id: str, status: str, meta: dict | None = None):
     db = await get_db()
+    home_team, away_team, score_home, score_away, minute, league, status_desc = _live_meta_values(meta)
     await db.execute(
-        """INSERT INTO live_match_actions (event_id, status, updated_at)
-           VALUES (?, ?, datetime('now'))
+        """INSERT INTO live_match_actions
+             (event_id, home_team, away_team, score_home, score_away, minute,
+              league, status_desc, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(event_id) DO UPDATE SET
+             home_team = COALESCE(NULLIF(excluded.home_team, ''), live_match_actions.home_team),
+             away_team = COALESCE(NULLIF(excluded.away_team, ''), live_match_actions.away_team),
+             score_home = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                               THEN excluded.score_home ELSE live_match_actions.score_home END,
+             score_away = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                               THEN excluded.score_away ELSE live_match_actions.score_away END,
+             minute = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                           THEN excluded.minute ELSE live_match_actions.minute END,
+             league = COALESCE(NULLIF(excluded.league, ''), live_match_actions.league),
+             status_desc = COALESCE(NULLIF(excluded.status_desc, ''), live_match_actions.status_desc),
              status = excluded.status,
              updated_at = excluded.updated_at""",
-        (event_id, status),
+        (
+            event_id, home_team, away_team, score_home, score_away, minute,
+            league, status_desc, status,
+        ),
     )
     await db.commit()
 
 
-async def bulk_set_live_actions(event_ids: list[str], status: str):
+async def bulk_set_live_actions(
+    event_ids: list[str],
+    status: str,
+    metadata_by_id: dict[str, dict] | None = None,
+):
     if not event_ids:
         return
     db = await get_db()
     for eid in event_ids:
+        home_team, away_team, score_home, score_away, minute, league, status_desc = _live_meta_values(
+            (metadata_by_id or {}).get(str(eid))
+        )
         await db.execute(
-            """INSERT INTO live_match_actions (event_id, status, updated_at)
-               VALUES (?, ?, datetime('now'))
+            """INSERT INTO live_match_actions
+                 (event_id, home_team, away_team, score_home, score_away, minute,
+                  league, status_desc, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(event_id) DO UPDATE SET
+                 home_team = COALESCE(NULLIF(excluded.home_team, ''), live_match_actions.home_team),
+                 away_team = COALESCE(NULLIF(excluded.away_team, ''), live_match_actions.away_team),
+                 score_home = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                                   THEN excluded.score_home ELSE live_match_actions.score_home END,
+                 score_away = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                                   THEN excluded.score_away ELSE live_match_actions.score_away END,
+                 minute = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
+                               THEN excluded.minute ELSE live_match_actions.minute END,
+                 league = COALESCE(NULLIF(excluded.league, ''), live_match_actions.league),
+                 status_desc = COALESCE(NULLIF(excluded.status_desc, ''), live_match_actions.status_desc),
                  status = excluded.status,
                  updated_at = excluded.updated_at""",
-            (eid, status),
+            (
+                eid, home_team, away_team, score_home, score_away, minute,
+                league, status_desc, status,
+            ),
         )
     await db.commit()
+
+
+async def get_following_live_matches() -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT event_id, home_team, away_team, score_home, score_away,
+                  minute, league, status_desc, status, created_at, updated_at
+           FROM live_match_actions
+           WHERE status = 'following'
+           ORDER BY updated_at DESC"""
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
 
 
 async def mark_upcoming_anomaly(event_ids: list[str], scan_date: str):
