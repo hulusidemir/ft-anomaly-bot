@@ -66,6 +66,12 @@ async def init_db():
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_upcoming_event
             ON upcoming_matches(event_id, scan_date);
+
+        CREATE TABLE IF NOT EXISTS live_match_actions (
+            event_id TEXT PRIMARY KEY,
+            status TEXT DEFAULT 'new',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
     """)
     await db.commit()
 
@@ -310,6 +316,7 @@ async def clear_database():
         DELETE FROM anomalies;
         DELETE FROM upcoming_analyses;
         DELETE FROM upcoming_matches;
+        DELETE FROM live_match_actions;
     """)
     await db.commit()
 
@@ -402,6 +409,55 @@ async def delete_upcoming_matches(ids: list[int]):
 async def clear_upcoming_matches():
     db = await get_db()
     await db.execute("DELETE FROM upcoming_matches")
+    await db.commit()
+
+
+# ---- Live Match Actions CRUD ----
+
+async def get_live_actions(event_ids: list[str] | None = None) -> dict[str, str]:
+    """Return {event_id: status} map for the requested events (or all)."""
+    db = await get_db()
+    if event_ids:
+        placeholders = ",".join("?" for _ in event_ids)
+        cursor = await db.execute(
+            f"SELECT event_id, status FROM live_match_actions "
+            f"WHERE event_id IN ({placeholders})",
+            event_ids,
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT event_id, status FROM live_match_actions"
+        )
+    rows = await cursor.fetchall()
+    return {r["event_id"]: r["status"] for r in rows}
+
+
+async def set_live_action(event_id: str, status: str):
+    db = await get_db()
+    await db.execute(
+        """INSERT INTO live_match_actions (event_id, status, updated_at)
+           VALUES (?, ?, datetime('now'))
+           ON CONFLICT(event_id) DO UPDATE SET
+             status = excluded.status,
+             updated_at = excluded.updated_at""",
+        (event_id, status),
+    )
+    await db.commit()
+
+
+async def bulk_set_live_actions(event_ids: list[str], status: str):
+    if not event_ids:
+        return
+    db = await get_db()
+    for eid in event_ids:
+        await db.execute(
+            """INSERT INTO live_match_actions (event_id, status, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(event_id) DO UPDATE SET
+                 status = excluded.status,
+                 updated_at = excluded.updated_at""",
+            (eid, status),
+        )
     await db.commit()
 
 

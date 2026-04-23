@@ -1491,3 +1491,256 @@ tbody tr.state-following.anomaly-row:hover td {
         bottom: 14px;
     }
 }
+
+/* ===== Live Matches Tab ===== */
+
+.live-row-main {
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+.live-row-main:hover {
+    background: rgba(104, 181, 255, 0.05);
+}
+
+.live-row-main.expanded {
+    background: rgba(104, 181, 255, 0.08);
+}
+
+.live-row-details > td {
+    padding: 18px 22px 24px;
+    background: var(--panel-soft);
+    border-top: 1px dashed var(--border-soft);
+}
+
+.live-minute {
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.live-details {
+    display: block;
+}
+
+.live-details-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 28px;
+    align-items: flex-start;
+}
+
+.live-details-col-stats {
+    min-width: 0;
+}
+
+.live-details-title {
+    font-size: 0.82rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+.live-details-empty,
+.live-details-loading {
+    padding: 14px 0;
+    color: var(--text-muted);
+    font-size: 0.92rem;
+}
+
+.stat-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border-soft);
+}
+
+.stat-row:last-child {
+    border-bottom: 0;
+}
+
+.stat-label {
+    color: var(--text-soft);
+    font-size: 0.86rem;
+    letter-spacing: 0.02em;
+}
+
+.stat-bars {
+    display: grid;
+    grid-template-columns: 52px 1fr 52px;
+    align-items: center;
+    gap: 10px;
+}
+
+.stat-value {
+    font-weight: 600;
+    font-size: 0.92rem;
+    color: var(--text);
+}
+
+.stat-value-home {
+    text-align: right;
+}
+
+.stat-value-away {
+    text-align: left;
+}
+
+.stat-bar {
+    display: flex;
+    width: 100%;
+    height: 8px;
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.stat-bar-home {
+    background: linear-gradient(90deg, var(--blue), rgba(104, 181, 255, 0.45));
+}
+
+.stat-bar-away {
+    background: linear-gradient(270deg, var(--accent), rgba(255, 138, 91, 0.45));
+}
+
+.form-block {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+}
+
+.form-team {
+    padding: 12px 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.form-team-name {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+
+.form-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+
+.form-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.form-chip.form-win {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+.form-chip.form-loss {
+    background: var(--danger-bg);
+    color: var(--danger);
+}
+
+.form-chip.form-draw {
+    background: var(--warning-bg);
+    color: var(--amber);
+}
+
+.form-empty {
+    color: var(--text-muted);
+}
+
+.form-meta {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.form-meta strong {
+    color: var(--text-soft);
+}
+
+.expectation-row {
+    margin-top: 10px;
+}
+
+.expectation-label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.expectation-cells {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.exp-cell {
+    padding: 10px 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 0.95rem;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.exp-cell strong {
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+}
+
+.expectation-bar {
+    display: flex;
+    width: 100%;
+    height: 10px;
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.expectation-bar-home {
+    background: var(--blue);
+}
+
+.expectation-bar-draw {
+    background: var(--amber);
+}
+
+.expectation-bar-away {
+    background: var(--accent);
+}
+
+.expectation-legend {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+@media (max-width: 900px) {
+    .live-details-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+    }
+}

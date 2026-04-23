@@ -38,10 +38,18 @@ class MatchStats:
     total_shots_away: int = 0
     shots_on_target_home: int = 0
     shots_on_target_away: int = 0
+    shots_off_target_home: int = 0
+    shots_off_target_away: int = 0
     yellow_cards_home: int = 0
     yellow_cards_away: int = 0
     red_cards_home: int = 0
     red_cards_away: int = 0
+    offsides_home: int = 0
+    offsides_away: int = 0
+    corner_kicks_home: int = 0
+    corner_kicks_away: int = 0
+    fouls_home: int = 0
+    fouls_away: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -53,10 +61,18 @@ class MatchStats:
             "total_shots_away": self.total_shots_away,
             "shots_on_target_home": self.shots_on_target_home,
             "shots_on_target_away": self.shots_on_target_away,
+            "shots_off_target_home": self.shots_off_target_home,
+            "shots_off_target_away": self.shots_off_target_away,
             "yellow_cards_home": self.yellow_cards_home,
             "yellow_cards_away": self.yellow_cards_away,
             "red_cards_home": self.red_cards_home,
             "red_cards_away": self.red_cards_away,
+            "offsides_home": self.offsides_home,
+            "offsides_away": self.offsides_away,
+            "corner_kicks_home": self.corner_kicks_home,
+            "corner_kicks_away": self.corner_kicks_away,
+            "fouls_home": self.fouls_home,
+            "fouls_away": self.fouls_away,
         }
 
 
@@ -431,6 +447,8 @@ class SofascoreScraper:
                 elif key in ("shotsoffgoal", "shotsofftarget") or "shots off target" in name or name == "off target":
                     shots_off_home = int(self._parse_stat_value(home_val))
                     shots_off_away = int(self._parse_stat_value(away_val))
+                    stats.shots_off_target_home = shots_off_home
+                    stats.shots_off_target_away = shots_off_away
                 elif key == "blockedscoringattempt" or "blocked shot" in name:
                     blocked_home = int(self._parse_stat_value(home_val))
                     blocked_away = int(self._parse_stat_value(away_val))
@@ -443,6 +461,15 @@ class SofascoreScraper:
                 elif key == "redcards" or "red card" in name:
                     stats.red_cards_home = int(self._parse_stat_value(home_val))
                     stats.red_cards_away = int(self._parse_stat_value(away_val))
+                elif key == "offsides" or "offside" in name:
+                    stats.offsides_home = int(self._parse_stat_value(home_val))
+                    stats.offsides_away = int(self._parse_stat_value(away_val))
+                elif key in ("cornerkicks", "corners") or "corner kicks" in name or name == "corners":
+                    stats.corner_kicks_home = int(self._parse_stat_value(home_val))
+                    stats.corner_kicks_away = int(self._parse_stat_value(away_val))
+                elif key == "fouls" or name == "fouls":
+                    stats.fouls_home = int(self._parse_stat_value(home_val))
+                    stats.fouls_away = int(self._parse_stat_value(away_val))
 
         # Calculate total shots if not directly provided
         if stats.total_shots_home == 0 and (shots_on_home + shots_off_home + blocked_home) > 0:
@@ -501,6 +528,96 @@ class SofascoreScraper:
                 continue
 
         return matches
+
+    async def get_match_form(self, event_id: str) -> dict:
+        """Fetch pregame form for both teams (recent results, league position, rating)."""
+        data = await self._fetch_json(f"{SOFASCORE_BASE}/event/{event_id}/pregame-form")
+        if not data:
+            return {"home": {}, "away": {}}
+
+        def _parse_side(side: dict) -> dict:
+            if not isinstance(side, dict):
+                return {}
+            raw_form = side.get("form") or []
+            # Sofascore returns strings like "W","D","L"
+            form = [str(x).upper()[:1] for x in raw_form if x]
+            return {
+                "form": form,
+                "position": side.get("position"),
+                "value": str(side.get("value", "")).strip(),
+                "avg_rating": side.get("avgRating"),
+            }
+
+        return {
+            "home": _parse_side(data.get("homeTeam", {})),
+            "away": _parse_side(data.get("awayTeam", {})),
+        }
+
+    async def get_match_votes(self, event_id: str) -> dict:
+        """Fetch fan-vote distribution (proxy for audience expectation)."""
+        data = await self._fetch_json(f"{SOFASCORE_BASE}/event/{event_id}/votes")
+        if not data:
+            return {"home_pct": 0, "draw_pct": 0, "away_pct": 0, "total": 0}
+
+        vote = data.get("vote", {})
+        v1 = int(vote.get("vote1", 0) or 0)
+        vx = int(vote.get("voteX", 0) or 0)
+        v2 = int(vote.get("vote2", 0) or 0)
+        total = v1 + vx + v2
+        if total <= 0:
+            return {"home_pct": 0, "draw_pct": 0, "away_pct": 0, "total": 0}
+        return {
+            "home_pct": round(v1 * 100 / total, 1),
+            "draw_pct": round(vx * 100 / total, 1),
+            "away_pct": round(v2 * 100 / total, 1),
+            "total": total,
+        }
+
+    async def get_match_odds(self, event_id: str) -> dict:
+        """Fetch featured 1X2 odds for the match (expectation proxy)."""
+        data = await self._fetch_json(f"{SOFASCORE_BASE}/event/{event_id}/odds/1/featured")
+        if not data:
+            return {}
+
+        featured = data.get("featured") or {}
+        default = featured.get("default") or {}
+        choices = default.get("choices") or []
+        odds = {}
+        for c in choices:
+            name = str(c.get("name", "")).strip()
+            frac = c.get("fractionalValue") or c.get("initialFractionalValue")
+            # fractionalValue is like "5/2"; convert to decimal
+            decimal_val = None
+            if frac and "/" in frac:
+                try:
+                    num, den = frac.split("/", 1)
+                    decimal_val = round(int(num) / int(den) + 1, 2)
+                except (ValueError, ZeroDivisionError):
+                    decimal_val = None
+            if name == "1":
+                odds["home"] = decimal_val
+            elif name == "X":
+                odds["draw"] = decimal_val
+            elif name == "2":
+                odds["away"] = decimal_val
+        return odds
+
+    async def get_live_match_details(self, event_id: str) -> dict:
+        """Fetch enriched live-match detail payload: stats, form, votes, odds."""
+        stats_task = asyncio.create_task(self.get_match_statistics(event_id))
+        form_task = asyncio.create_task(self.get_match_form(event_id))
+        votes_task = asyncio.create_task(self.get_match_votes(event_id))
+        odds_task = asyncio.create_task(self.get_match_odds(event_id))
+        results = await asyncio.gather(
+            stats_task, form_task, votes_task, odds_task, return_exceptions=True
+        )
+        stats_res, form_res, votes_res, odds_res = results
+        return {
+            "stats": (stats_res.to_dict() if hasattr(stats_res, "to_dict") else None),
+            "form": form_res if isinstance(form_res, dict) else {"home": {}, "away": {}},
+            "votes": votes_res if isinstance(votes_res, dict) else {},
+            "odds": odds_res if isinstance(odds_res, dict) else {},
+        }
 
     async def close(self):
         if self._session:

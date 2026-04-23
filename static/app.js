@@ -13,6 +13,10 @@ const API = {
     analyses: '/api/analyses',
     deleteAnalyses: '/api/analyses/delete',
     clearAnalyses: '/api/analyses/clear',
+    liveMatches: '/api/live-matches',
+    liveMatchDetails: (id) => `/api/live-matches/${encodeURIComponent(id)}/details`,
+    liveMatchStatus: (id) => `/api/live-matches/${encodeURIComponent(id)}/status`,
+    liveMatchBulkStatus: '/api/live-matches/bulk-status',
     upcoming: (status) => `/api/upcoming${status ? `?status=${status}` : ''}`,
     updateUpcomingStatus: (id) => `/api/upcoming/${id}/status`,
     bulkUpcomingStatus: '/api/upcoming/bulk-status',
@@ -36,13 +40,19 @@ const ICONS = {
 let anomalies = [];
 let analyses = [];
 let upcomingMatches = [];
+let liveMatches = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
 const selectedUpcoming = new Set();
+const selectedLive = new Set();
 const selectedDeleted = new Set();
+
+const liveDetailsCache = new Map();
+const liveDetailsInFlight = new Map();
+const expandedLiveRows = new Set();
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -64,6 +74,7 @@ $$('.tab').forEach((tab) => {
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
         if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
+        if (tab.dataset.tab === 'live') loadLiveMatches();
     });
 });
 
@@ -233,6 +244,7 @@ function initSortableHeaders() {
 
             if (tableId === 'anomaly-table') renderAnomalies();
             if (tableId === 'upcoming-table') renderUpcoming();
+            if (tableId === 'live-table') renderLiveMatches();
         });
     });
 }
@@ -782,6 +794,393 @@ $('#btn-trigger-upcoming').addEventListener('click', async () => {
     }, 10000);
 });
 
+/* ===== Live Matches ===== */
+
+async function loadLiveMatches() {
+    const tbody = $('#live-body');
+    if (!liveMatches.length && tbody) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maçlar yükleniyor...</td></tr>';
+    }
+
+    const data = await apiFetch(API.liveMatches);
+    if (!data) return;
+
+    liveMatches = data;
+    renderLiveMatches();
+    touchLastUpdated();
+}
+
+function getVisibleLiveMatches() {
+    const filter = ($('#filter-live-status') || {}).value || '';
+    const searchQuery = ($('#search-live') || {}).value || '';
+
+    let filtered = liveMatches;
+    if (filter) filtered = filtered.filter((item) => (item.status || 'new') === filter);
+
+    filtered = filterBySearch(filtered, searchQuery, (item) =>
+        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away}`
+    );
+
+    filtered = sortData(filtered, 'live-table', (item, key) => {
+        switch (key) {
+            case 'match':
+                return `${item.home_team} ${item.away_team}`.toLowerCase();
+            case 'score':
+                return item.score_home * 100 + item.score_away;
+            case 'minute':
+                return item.minute || 0;
+            case 'league':
+                return (item.league || '').toLowerCase();
+            case 'status':
+                return item.status || 'new';
+            default:
+                return '';
+        }
+    });
+
+    return filtered;
+}
+
+function renderLiveMatches() {
+    const tbody = $('#live-body');
+    if (!tbody) return;
+    const selectAll = $('#select-all-live');
+    selectedLive.clear();
+    if (selectAll) selectAll.checked = false;
+    updateLiveBulk();
+
+    const filtered = getVisibleLiveMatches();
+    setText('#live-count', `${liveMatches.length} maç`);
+
+    if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Canlı maç bulunamadı</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = filtered.map((item) => buildLiveRowHtml(item)).join('');
+
+    $$('.chk-live').forEach((checkbox) => {
+        checkbox.addEventListener('change', () => {
+            const eid = checkbox.dataset.eid;
+            if (checkbox.checked) selectedLive.add(eid);
+            else selectedLive.delete(eid);
+            updateLiveBulk();
+        });
+    });
+
+    $$('.live-row-main').forEach((row) => {
+        row.addEventListener('click', (event) => {
+            if (event.target.closest('a, button, input, .row-actions')) return;
+            toggleLiveDetails(row.dataset.eid);
+        });
+    });
+
+    // Re-expand any previously-open rows
+    expandedLiveRows.forEach((eid) => renderLiveDetails(eid));
+}
+
+function buildLiveRowHtml(item) {
+    const statusValue = item.status || 'new';
+    const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
+    const expanded = expandedLiveRows.has(item.event_id) ? 'expanded' : '';
+    return `
+        <tr class="live-row-main ${stateClass} ${expanded}" data-eid="${escHtml(item.event_id)}">
+            <td class="col-check"><input type="checkbox" class="chk-live" data-eid="${escHtml(item.event_id)}"></td>
+            <td>
+                <div class="cell-stack">
+                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
+                        ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
+                    </a>
+                    <span class="cell-subtle">Etkinlik ID: ${escHtml(item.event_id)} • ${escHtml(item.status_desc || '')}</span>
+                </div>
+            </td>
+            <td><span class="score-pill">${item.score_home} - ${item.score_away}</span></td>
+            <td><span class="table-tag live-minute">${item.minute || 0}'</span></td>
+            <td>${escHtml(item.league || '-')}</td>
+            <td><span class="upcoming-status-label">${statusLabel(statusValue)}</span></td>
+            <td>
+                <div class="row-actions row-actions-icons">
+                    <button class="icon-btn icon-btn-bet${statusValue === 'bet_placed' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
+                    <button class="icon-btn icon-btn-ignore${statusValue === 'ignored' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
+                    <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
+                </div>
+            </td>
+        </tr>
+        <tr class="live-row-details" data-eid-details="${escHtml(item.event_id)}" style="${expandedLiveRows.has(item.event_id) ? '' : 'display:none;'}">
+            <td colspan="7">
+                <div class="live-details" id="live-details-${escHtml(item.event_id)}">Detaylar yükleniyor...</div>
+            </td>
+        </tr>`;
+}
+
+function escAttr(value) {
+    return String(value || '').replace(/'/g, "\\'");
+}
+
+async function toggleLiveDetails(eventId) {
+    const detailsRow = document.querySelector(`[data-eid-details="${CSS.escape(eventId)}"]`);
+    const mainRow = document.querySelector(`.live-row-main[data-eid="${CSS.escape(eventId)}"]`);
+    if (!detailsRow) return;
+
+    if (expandedLiveRows.has(eventId)) {
+        expandedLiveRows.delete(eventId);
+        detailsRow.style.display = 'none';
+        if (mainRow) mainRow.classList.remove('expanded');
+        return;
+    }
+
+    expandedLiveRows.add(eventId);
+    detailsRow.style.display = '';
+    if (mainRow) mainRow.classList.add('expanded');
+    renderLiveDetails(eventId);
+    await ensureLiveDetails(eventId);
+    renderLiveDetails(eventId);
+}
+
+async function ensureLiveDetails(eventId) {
+    if (liveDetailsCache.has(eventId)) return liveDetailsCache.get(eventId);
+    if (liveDetailsInFlight.has(eventId)) return liveDetailsInFlight.get(eventId);
+
+    const promise = (async () => {
+        const data = await apiFetch(API.liveMatchDetails(eventId));
+        if (data) liveDetailsCache.set(eventId, data);
+        liveDetailsInFlight.delete(eventId);
+        return data;
+    })();
+    liveDetailsInFlight.set(eventId, promise);
+    return promise;
+}
+
+function renderLiveDetails(eventId) {
+    const container = document.querySelector(
+        `.live-row-details[data-eid-details="${CSS.escape(eventId)}"] .live-details`
+    );
+    if (!container) return;
+
+    const data = liveDetailsCache.get(eventId);
+    if (!data) {
+        container.innerHTML = '<div class="live-details-loading">Detaylar yükleniyor...</div>';
+        return;
+    }
+
+    const match = liveMatches.find((m) => m.event_id === eventId) || {};
+    const stats = data.stats || {};
+    const form = data.form || { home: {}, away: {} };
+    const votes = data.votes || {};
+    const odds = data.odds || {};
+
+    const rows = [
+        { label: 'Topa Sahip Olma (%)', home: stats.possession_home, away: stats.possession_away, unit: '%' },
+        { label: 'Tehlikeli Atak', home: stats.dangerous_attacks_home, away: stats.dangerous_attacks_away },
+        { label: 'Toplam Şut', home: stats.total_shots_home, away: stats.total_shots_away },
+        { label: 'İsabetli Şut', home: stats.shots_on_target_home, away: stats.shots_on_target_away },
+        { label: 'Kaçan Şut', home: stats.shots_off_target_home, away: stats.shots_off_target_away },
+        { label: 'Korner', home: stats.corner_kicks_home, away: stats.corner_kicks_away },
+        { label: 'Ofsayt', home: stats.offsides_home, away: stats.offsides_away },
+        { label: 'Faul', home: stats.fouls_home, away: stats.fouls_away },
+        { label: 'Sarı Kart', home: stats.yellow_cards_home, away: stats.yellow_cards_away },
+        { label: 'Kırmızı Kart', home: stats.red_cards_home, away: stats.red_cards_away },
+    ];
+
+    const statsHtml = rows.map((r) => {
+        const home = Number(r.home) || 0;
+        const away = Number(r.away) || 0;
+        const total = home + away;
+        const hPct = total > 0 ? (home * 100) / total : 50;
+        const aPct = total > 0 ? (away * 100) / total : 50;
+        const suffix = r.unit || '';
+        const displayH = r.unit ? `${formatNumber(home)}${suffix}` : formatNumber(home);
+        const displayA = r.unit ? `${formatNumber(away)}${suffix}` : formatNumber(away);
+
+        return `
+            <div class="stat-row">
+                <div class="stat-label">${r.label}</div>
+                <div class="stat-bars">
+                    <span class="stat-value stat-value-home">${displayH}</span>
+                    <div class="stat-bar">
+                        <div class="stat-bar-home" style="width:${hPct.toFixed(1)}%"></div>
+                        <div class="stat-bar-away" style="width:${aPct.toFixed(1)}%"></div>
+                    </div>
+                    <span class="stat-value stat-value-away">${displayA}</span>
+                </div>
+            </div>`;
+    }).join('');
+
+    const formHtml = renderFormBlock(match, form);
+    const expectationHtml = renderExpectationBlock(match, votes, odds);
+
+    container.innerHTML = `
+        <div class="live-details-grid">
+            <div class="live-details-col live-details-col-stats">
+                <h3 class="live-details-title">Maç İstatistikleri</h3>
+                ${statsHtml || '<div class="live-details-empty">İstatistik verisi henüz yok</div>'}
+            </div>
+            <div class="live-details-col">
+                <h3 class="live-details-title">Form Durumu</h3>
+                ${formHtml}
+                <h3 class="live-details-title" style="margin-top:18px;">Beklenti</h3>
+                ${expectationHtml}
+            </div>
+        </div>`;
+}
+
+function renderFormBlock(match, form) {
+    const home = form.home || {};
+    const away = form.away || {};
+    if (!home.form && !away.form) {
+        return '<div class="live-details-empty">Form verisi bulunamadı</div>';
+    }
+
+    const renderChips = (list) => {
+        if (!list || !list.length) return '<span class="form-empty">-</span>';
+        return list.map((ch) => {
+            const letter = String(ch).toUpperCase()[0] || '-';
+            const cls = letter === 'W' ? 'form-win' : letter === 'L' ? 'form-loss' : 'form-draw';
+            return `<span class="form-chip ${cls}">${letter}</span>`;
+        }).join('');
+    };
+
+    const homePos = home.position != null ? `#${home.position}` : '-';
+    const awayPos = away.position != null ? `#${away.position}` : '-';
+    const homeRating = home.avg_rating != null ? formatNumber(home.avg_rating) : (home.value || '-');
+    const awayRating = away.avg_rating != null ? formatNumber(away.avg_rating) : (away.value || '-');
+
+    return `
+        <div class="form-block">
+            <div class="form-team">
+                <div class="form-team-name">${escHtml(match.home_team || 'Ev')}</div>
+                <div class="form-chips">${renderChips(home.form)}</div>
+                <div class="form-meta">Sıralama: <strong>${homePos}</strong> • Puan: <strong>${homeRating}</strong></div>
+            </div>
+            <div class="form-team">
+                <div class="form-team-name">${escHtml(match.away_team || 'Dep')}</div>
+                <div class="form-chips">${renderChips(away.form)}</div>
+                <div class="form-meta">Sıralama: <strong>${awayPos}</strong> • Puan: <strong>${awayRating}</strong></div>
+            </div>
+        </div>`;
+}
+
+function renderExpectationBlock(match, votes, odds) {
+    const hasOdds = odds && (odds.home || odds.draw || odds.away);
+    const hasVotes = votes && (votes.home_pct || votes.draw_pct || votes.away_pct);
+
+    if (!hasOdds && !hasVotes) {
+        return '<div class="live-details-empty">Beklenti verisi bulunamadı</div>';
+    }
+
+    const oddsHtml = hasOdds ? `
+        <div class="expectation-row">
+            <span class="expectation-label">Oranlar</span>
+            <div class="expectation-cells">
+                <span class="exp-cell"><strong>1</strong> ${odds.home ?? '-'}</span>
+                <span class="exp-cell"><strong>X</strong> ${odds.draw ?? '-'}</span>
+                <span class="exp-cell"><strong>2</strong> ${odds.away ?? '-'}</span>
+            </div>
+        </div>` : '';
+
+    const votesHtml = hasVotes ? `
+        <div class="expectation-row">
+            <span class="expectation-label">Taraftar (${votes.total || 0} oy)</span>
+            <div class="expectation-bar">
+                <div class="expectation-bar-home" style="width:${votes.home_pct || 0}%" title="${match.home_team}: ${votes.home_pct || 0}%"></div>
+                <div class="expectation-bar-draw" style="width:${votes.draw_pct || 0}%" title="Beraberlik: ${votes.draw_pct || 0}%"></div>
+                <div class="expectation-bar-away" style="width:${votes.away_pct || 0}%" title="${match.away_team}: ${votes.away_pct || 0}%"></div>
+            </div>
+            <div class="expectation-legend">
+                <span>${escHtml(match.home_team || '')} ${votes.home_pct || 0}%</span>
+                <span>Beraberlik ${votes.draw_pct || 0}%</span>
+                <span>${escHtml(match.away_team || '')} ${votes.away_pct || 0}%</span>
+            </div>
+        </div>` : '';
+
+    return oddsHtml + votesHtml;
+}
+
+function formatNumber(value) {
+    if (value == null || value === '') return '-';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return String(value);
+    if (Math.abs(num) >= 10 || Number.isInteger(num)) return String(Math.round(num));
+    return num.toFixed(1);
+}
+
+function updateLiveBulk() {
+    const count = selectedLive.size;
+    setText('#selected-count-live', `${count} seçili`);
+    const betBtn = $('#btn-bulk-bet-live');
+    const ignBtn = $('#btn-bulk-ignore-live');
+    const folBtn = $('#btn-bulk-follow-live');
+    if (betBtn) betBtn.disabled = count === 0;
+    if (ignBtn) ignBtn.disabled = count === 0;
+    if (folBtn) folBtn.disabled = count === 0;
+}
+
+async function setLiveStatus(eventId, status) {
+    const match = liveMatches.find((m) => m.event_id === eventId);
+    if (!match) return;
+    const newStatus = match.status === status ? 'new' : status;
+
+    const result = await apiPost(API.liveMatchStatus(eventId), { status: newStatus });
+    if (!result || !result.ok) return;
+
+    match.status = newStatus;
+    renderLiveMatches();
+    toast(`Durum güncellendi: ${statusLabel(newStatus)}`);
+}
+
+async function bulkLiveStatus(status) {
+    const eventIds = [...selectedLive];
+    if (!eventIds.length) return;
+
+    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status });
+    if (!result || !result.ok) return;
+
+    eventIds.forEach((eid) => {
+        const match = liveMatches.find((m) => m.event_id === eid);
+        if (match) match.status = status;
+    });
+
+    renderLiveMatches();
+    toast(`${eventIds.length} maç güncellendi: ${statusLabel(status)}`);
+}
+
+const selectAllLive = $('#select-all-live');
+if (selectAllLive) {
+    selectAllLive.addEventListener('change', (event) => {
+        const checked = event.target.checked;
+        $$('.chk-live').forEach((checkbox) => {
+            checkbox.checked = checked;
+            const eid = checkbox.dataset.eid;
+            if (checked) selectedLive.add(eid);
+            else selectedLive.delete(eid);
+        });
+        updateLiveBulk();
+    });
+}
+
+const btnRefreshLive = $('#btn-refresh-live');
+if (btnRefreshLive) btnRefreshLive.addEventListener('click', loadLiveMatches);
+
+const filterLive = $('#filter-live-status');
+if (filterLive) filterLive.addEventListener('change', renderLiveMatches);
+
+const searchLive = $('#search-live');
+if (searchLive) searchLive.addEventListener('input', renderLiveMatches);
+
+const btnBulkBetLive = $('#btn-bulk-bet-live');
+if (btnBulkBetLive) btnBulkBetLive.addEventListener('click', () => bulkLiveStatus('bet_placed'));
+const btnBulkIgnoreLive = $('#btn-bulk-ignore-live');
+if (btnBulkIgnoreLive) btnBulkIgnoreLive.addEventListener('click', () => bulkLiveStatus('ignored'));
+const btnBulkFollowLive = $('#btn-bulk-follow-live');
+if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiveStatus('following'));
+
+// Hook sortable headers for live-table (initSortableHeaders runs once and
+// only dispatches to anomaly/upcoming; extend its dispatcher):
+function refreshVisibleLiveMatches() {
+    const activeTab = document.querySelector('.tab.active');
+    if (activeTab && activeTab.dataset.tab === 'live') renderLiveMatches();
+}
+
 async function loadDeletedAnomalies() {
     const data = await apiFetch(API.deletedAnomalies);
     if (!data) return;
@@ -929,10 +1328,12 @@ $('#btn-clear-database').addEventListener('click', async () => {
         anomalies = [];
         analyses = [];
         upcomingMatches = [];
+        liveMatches = [];
         deletedAnomalies = [];
         renderAnomalies();
         renderAnalyses();
         renderUpcoming();
+        renderLiveMatches();
         renderDeletedAnomalies();
         updateOverview();
         touchLastUpdated();
@@ -1062,4 +1463,15 @@ async function refreshAllData() {
     setInterval(loadAnomalies, 60000);
     setInterval(loadUpcoming, 60000);
     setInterval(checkStatus, 30000);
+    setInterval(() => {
+        const activeTab = document.querySelector('.tab.active');
+        if (activeTab && activeTab.dataset.tab === 'live') {
+            loadLiveMatches();
+            // Refresh details of currently-expanded rows
+            expandedLiveRows.forEach((eid) => {
+                liveDetailsCache.delete(eid);
+                ensureLiveDetails(eid).then(() => renderLiveDetails(eid));
+            });
+        }
+    }, 60000);
 })();

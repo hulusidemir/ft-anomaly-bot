@@ -3,8 +3,10 @@ FastAPI application — serves the dashboard and API endpoints.
 Starts background workers on startup via APScheduler.
 """
 
+import asyncio
 import logging
 import json
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -23,6 +25,7 @@ from db import (
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
     clear_database,
+    get_live_actions, set_live_action, bulk_set_live_actions,
 )
 from workers import live_scan, upcoming_scan
 from scraper import scraper
@@ -299,18 +302,115 @@ async def api_status():
     return {"status": "running", "scheduler_jobs": jobs}
 
 
+# ---- Live Matches Endpoints ----
+
+# Short-TTL in-memory caches so the dashboard tab is fast and we don't hammer
+# Sofascore's rate limit. Sofascore's live endpoint already has heavy bot
+# protection; re-using the last scrape for ~20s is safe.
+_live_list_cache: dict = {"matches": [], "ts": 0.0}
+_live_list_lock = asyncio.Lock()
+
+_live_details_cache: dict[str, dict] = {}  # event_id -> {"data": dict, "ts": float}
+_live_details_locks: dict[str, asyncio.Lock] = {}
+
+LIVE_LIST_TTL = 20.0
+LIVE_DETAILS_TTL = 45.0
+
+
+async def _get_live_matches_cached():
+    async with _live_list_lock:
+        now = time.monotonic()
+        if _live_list_cache["matches"] and (now - _live_list_cache["ts"]) < LIVE_LIST_TTL:
+            return _live_list_cache["matches"]
+        fresh = await scraper.get_live_matches()
+        if fresh:
+            _live_list_cache["matches"] = fresh
+            _live_list_cache["ts"] = now
+    return _live_list_cache["matches"]
+
+
+@app.get("/api/live-matches")
+async def api_live_matches():
+    """Return all currently-live football matches enriched with user action status."""
+    matches = await _get_live_matches_cached()
+    event_ids = [m.event_id for m in matches]
+    actions = await get_live_actions(event_ids) if event_ids else {}
+
+    payload = []
+    for m in matches:
+        payload.append({
+            "event_id": m.event_id,
+            "home_team": m.home_team,
+            "away_team": m.away_team,
+            "score_home": m.score_home,
+            "score_away": m.score_away,
+            "minute": m.minute,
+            "league": m.league,
+            "status_desc": m.status_desc,
+            "status": actions.get(m.event_id, "new"),
+        })
+    return payload
+
+
+@app.get("/api/live-matches/{event_id}/details")
+async def api_live_match_details(event_id: str):
+    """Return enriched stats/form/votes/odds for a single live match (cached 45s)."""
+    now = time.monotonic()
+    cached = _live_details_cache.get(event_id)
+    if cached and (now - cached["ts"]) < LIVE_DETAILS_TTL:
+        return cached["data"]
+
+    lock = _live_details_locks.setdefault(event_id, asyncio.Lock())
+    async with lock:
+        cached = _live_details_cache.get(event_id)
+        if cached and (time.monotonic() - cached["ts"]) < LIVE_DETAILS_TTL:
+            return cached["data"]
+
+        details = await scraper.get_live_match_details(event_id)
+        _live_details_cache[event_id] = {"data": details, "ts": time.monotonic()}
+
+        # Opportunistic cleanup: drop old entries to stop unbounded growth.
+        if len(_live_details_cache) > 400:
+            cutoff = time.monotonic() - LIVE_DETAILS_TTL * 4
+            stale = [k for k, v in _live_details_cache.items() if v["ts"] < cutoff]
+            for k in stale:
+                _live_details_cache.pop(k, None)
+                _live_details_locks.pop(k, None)
+
+        return details
+
+
+@app.post("/api/live-matches/{event_id}/status")
+async def api_live_match_status(event_id: str, request: Request):
+    body = await request.json()
+    status = body.get("status")
+    if status not in ("new", "bet_placed", "ignored", "following"):
+        return JSONResponse({"error": "Invalid status"}, status_code=400)
+    await set_live_action(event_id, status)
+    return {"ok": True}
+
+
+@app.post("/api/live-matches/bulk-status")
+async def api_live_match_bulk_status(request: Request):
+    body = await request.json()
+    event_ids = body.get("event_ids", [])
+    status = body.get("status")
+    if not event_ids or status not in ("new", "bet_placed", "ignored", "following"):
+        return JSONResponse({"error": "Invalid request"}, status_code=400)
+    await bulk_set_live_actions(event_ids, status)
+    return {"ok": True}
+
+
 # ---- Manual triggers (for testing) ----
 
 @app.post("/api/trigger/live-scan")
 async def trigger_live_scan():
-    import asyncio
     asyncio.create_task(live_scan())
     return {"ok": True, "message": "Live scan triggered"}
 
 
 @app.post("/api/trigger/upcoming-scan")
 async def trigger_upcoming_scan():
-    import asyncio
     asyncio.create_task(upcoming_scan("manual"))
     return {"ok": True, "message": "Upcoming scan triggered"}
 
