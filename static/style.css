@@ -1827,6 +1827,21 @@ tbody tr.state-following.anomaly-row:hover td {
     justify-content: flex-end;
 }
 
+.live2-text-data {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    padding: 12px 18px 16px;
+    color: var(--text-soft);
+    font-size: 0.9rem;
+    border-top: 1px solid var(--border-soft);
+}
+
+.live2-text-data strong {
+    color: var(--text-muted);
+    font-weight: 700;
+}
+
 .live2-body {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);

@@ -46,7 +46,6 @@ let liveMatches = [];
 let liveMatches2 = [];
 let deletedAnomalies = [];
 let schedulerJobs = [];
-let live2DetailsRun = 0;
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
@@ -58,7 +57,6 @@ const selectedDeleted = new Set();
 const liveDetailsCache = new Map();
 const liveDetailsInFlight = new Map();
 const expandedLiveRows = new Set();
-const LIVE2_DETAIL_CONCURRENCY = 2;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -120,20 +118,6 @@ async function apiFetch(url, opts = {}) {
         return await response.json();
     } catch (error) {
         toast(`İstek başarısız: ${error.message}`, true);
-        return null;
-    }
-}
-
-async function apiFetchQuiet(url, opts = {}) {
-    try {
-        const response = await fetch(url, {
-            headers: { 'Content-Type': 'application/json' },
-            ...opts,
-        });
-
-        if (!response.ok) return null;
-        return await response.json();
-    } catch (_) {
         return null;
     }
 }
@@ -1240,8 +1224,6 @@ if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiv
 async function loadLiveMatches2() {
     const list = $('#live2-list');
     const button = $('#btn-fetch-live2');
-    const runId = live2DetailsRun + 1;
-    live2DetailsRun = runId;
     if (list) {
         list.innerHTML = '<div class="empty-msg">Canlı maçlar çekiliyor...</div>';
     }
@@ -1256,17 +1238,11 @@ async function loadLiveMatches2() {
         return;
     }
 
-    liveMatches2 = (Array.isArray(data) ? data : []).map((item) => ({
-        ...item,
-        details: null,
-        detailsLoading: true,
-        detailsError: '',
-    }));
+    liveMatches2 = Array.isArray(data) ? data : [];
     renderLive2Matches();
     touchLastUpdated();
     if (liveMatches2.length) {
-        toast(`${liveMatches2.length} canlı maç bulundu, detaylar yükleniyor`);
-        loadLive2DetailsProgressively(runId);
+        toast(`${liveMatches2.length} canlı maç listelendi`);
     }
 }
 
@@ -1314,7 +1290,6 @@ function renderLive2Matches(emptyText = 'Canlı maç bulunamadı') {
 function buildLive2CardHtml(item) {
     const statusValue = item.status || 'new';
     const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
-    const details = item.details || {};
     const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Canlı';
 
     return `
@@ -1340,178 +1315,13 @@ function buildLive2CardHtml(item) {
                     <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
                 </div>
             </div>
-            ${renderLive2CardBody(item)}
-        </article>`;
-}
-
-function renderLive2CardBody(item) {
-    if (item.detailsLoading) {
-        return `
-            <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
-                <section class="live2-stats">
-                    <h3 class="live-details-title">Maç İstatistikleri</h3>
-                    <div class="live-details-loading">İstatistikler yükleniyor...</div>
-                </section>
-                <section class="live2-context">
-                    <h3 class="live-details-title">Form ve Kadro</h3>
-                    <div class="live-details-loading">Form, kadro ve beklenti yükleniyor...</div>
-                </section>
-            </div>`;
-    }
-
-    if (item.detailsError) {
-        return `
-            <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
-                <section class="live2-stats">
-                    <h3 class="live-details-title">Maç İstatistikleri</h3>
-                    <div class="live-details-empty">${escHtml(item.detailsError)}</div>
-                </section>
-                <section class="live2-context">
-                    <h3 class="live-details-title">Form ve Kadro</h3>
-                    <div class="live-details-empty">Detay verisi alınamadı</div>
-                </section>
-            </div>`;
-    }
-
-    const details = item.details || {};
-    const form = details.form || {};
-    const votes = details.votes || {};
-    const odds = details.odds || {};
-    return `
-        <div class="live2-body" data-live2-body="${escHtml(item.event_id)}">
-            <section class="live2-stats">
-                <h3 class="live-details-title">Maç İstatistikleri</h3>
-                ${renderLive2Stats(details.stats)}
-            </section>
-            <section class="live2-context">
-                <h3 class="live-details-title">Form ve Kadro</h3>
-                ${renderLive2Form(item, form)}
-                <h3 class="live-details-title live2-title-spaced">Beklenti</h3>
-                ${renderExpectationBlock(item, votes, odds)}
-            </section>
-        </div>`;
-}
-
-function updateLive2CardBody(eventId) {
-    const item = liveMatches2.find((match) => match.event_id === eventId);
-    if (!item) return;
-    const body = document.querySelector(`.live2-card[data-eid="${CSS.escape(eventId)}"] .live2-body`);
-    if (body) body.outerHTML = renderLive2CardBody(item);
-}
-
-async function loadLive2DetailsProgressively(runId) {
-    let nextIndex = 0;
-    const worker = async () => {
-        while (runId === live2DetailsRun && nextIndex < liveMatches2.length) {
-            const item = liveMatches2[nextIndex];
-            nextIndex += 1;
-            if (!item) continue;
-            const data = await apiFetchQuiet(API.liveMatchDetails(item.event_id));
-            if (runId !== live2DetailsRun) return;
-            if (data) {
-                item.details = data;
-                item.detailsError = '';
-            } else {
-                item.detailsError = 'Detay verisi alınamadı';
-            }
-            item.detailsLoading = false;
-            updateLive2CardBody(item.event_id);
-        }
-    };
-
-    const workers = Array.from(
-        { length: Math.min(LIVE2_DETAIL_CONCURRENCY, liveMatches2.length) },
-        worker
-    );
-    await Promise.all(workers);
-    if (runId === live2DetailsRun && liveMatches2.length) {
-        toast('Canlı Maçlar-2 detayları güncellendi');
-    }
-}
-
-function renderLive2Stats(stats) {
-    if (!stats) {
-        return '<div class="live-details-empty">İstatistik verisi henüz yok</div>';
-    }
-
-    const rows = [
-        { label: 'Topa Sahip Olma', home: stats.possession_home, away: stats.possession_away, unit: '%' },
-        { label: 'Beklenen Gol (xG)', home: stats.expected_goals_home, away: stats.expected_goals_away, decimals: 2 },
-        { label: 'Toplam Şut', home: stats.total_shots_home, away: stats.total_shots_away },
-        { label: 'İsabetli Şut', home: stats.shots_on_target_home, away: stats.shots_on_target_away },
-        { label: 'Kaçan Şut', home: stats.shots_off_target_home, away: stats.shots_off_target_away },
-        { label: 'Bloklanmış Şut', home: stats.blocked_shots_home, away: stats.blocked_shots_away },
-        { label: 'Büyük Şans', home: stats.big_chances_home, away: stats.big_chances_away },
-        { label: 'Tehlikeli Atak', home: stats.dangerous_attacks_home, away: stats.dangerous_attacks_away },
-        { label: 'Korner', home: stats.corner_kicks_home, away: stats.corner_kicks_away },
-        { label: 'Pas İsabeti', home: statPercent(stats.pass_accuracy_home, passAccuracy(stats.accurate_passes_home, stats.total_passes_home)), away: statPercent(stats.pass_accuracy_away, passAccuracy(stats.accurate_passes_away, stats.total_passes_away)), unit: '%' },
-        { label: 'Ofsayt', home: stats.offsides_home, away: stats.offsides_away },
-        { label: 'Faul', home: stats.fouls_home, away: stats.fouls_away },
-        { label: 'Sarı Kart', home: stats.yellow_cards_home, away: stats.yellow_cards_away },
-        { label: 'Kırmızı Kart', home: stats.red_cards_home, away: stats.red_cards_away },
-    ];
-
-    return rows.map((r) => buildStatRow(r)).join('');
-}
-
-function buildStatRow(row) {
-    const home = Number(row.home) || 0;
-    const away = Number(row.away) || 0;
-    const total = home + away;
-    const hPct = total > 0 ? (home * 100) / total : 50;
-    const aPct = total > 0 ? (away * 100) / total : 50;
-    const suffix = row.unit || '';
-    const displayH = `${formatNumber(home, row.decimals)}${suffix}`;
-    const displayA = `${formatNumber(away, row.decimals)}${suffix}`;
-
-    return `
-        <div class="stat-row">
-            <div class="stat-label">${escHtml(row.label)}</div>
-            <div class="stat-bars">
-                <span class="stat-value stat-value-home">${displayH}</span>
-                <div class="stat-bar">
-                    <div class="stat-bar-home" style="width:${hPct.toFixed(1)}%"></div>
-                    <div class="stat-bar-away" style="width:${aPct.toFixed(1)}%"></div>
-                </div>
-                <span class="stat-value stat-value-away">${displayA}</span>
+            <div class="live2-text-data">
+                <span><strong>Durum:</strong> ${statusDesc}</span>
+                <span><strong>Skor:</strong> ${item.score_home} - ${item.score_away}</span>
+                <span><strong>Dakika:</strong> ${item.minute || 0}'</span>
+                <span><strong>Lig:</strong> ${escHtml(item.league || '-')}</span>
             </div>
-        </div>`;
-}
-
-function renderLive2Form(match, form) {
-    const home = (form || {}).home || {};
-    const away = (form || {}).away || {};
-
-    if (!home.form && !away.form && !home.value && !away.value) {
-        return '<div class="live-details-empty">Form veya kadro verisi bulunamadı</div>';
-    }
-
-    const renderChips = (list) => {
-        if (!list || !list.length) return '<span class="form-empty">-</span>';
-        return list.map((ch) => {
-            const letter = String(ch).toUpperCase()[0] || '-';
-            const cls = letter === 'W' ? 'form-win' : letter === 'L' ? 'form-loss' : 'form-draw';
-            return `<span class="form-chip ${cls}">${letter}</span>`;
-        }).join('');
-    };
-
-    const sideHtml = (teamName, side) => {
-        const position = side.position != null ? `#${escHtml(side.position)}` : '-';
-        const value = side.value || '-';
-        const rating = side.avg_rating != null ? formatNumber(side.avg_rating) : '-';
-        return `
-            <div class="live2-team-context">
-                <div class="form-team-name">${escHtml(teamName)}</div>
-                <div class="form-chips">${renderChips(side.form)}</div>
-                <div class="form-meta">Sıralama: <strong>${position}</strong> • Kadro değeri: <strong>${escHtml(value)}</strong> • Puan: <strong>${rating}</strong></div>
-            </div>`;
-    };
-
-    return `
-        <div class="live2-form-grid">
-            ${sideHtml(match.home_team || 'Ev', home)}
-            ${sideHtml(match.away_team || 'Dep', away)}
-        </div>`;
+        </article>`;
 }
 
 function updateLive2Bulk() {
