@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import random
 import logging
 import re
@@ -124,9 +125,26 @@ class UpcomingMatch:
     round_info: str = ""
 
 
+@dataclass
+class MatchResult:
+    event_id: str
+    is_finished: bool
+    score_home: int | None
+    score_away: int | None
+    status_type: str
+    status_desc: str
+
+
 class SofascoreScraper:
     # Concurrency: keep it low – a real browser never fires dozens of parallel XHRs.
     MAX_CONCURRENT_REQUESTS = 2
+    # The aggregate daily endpoint was retired in mid-2026.  Its replacement
+    # requires one request per category, so use a separate, bounded pool for
+    # that short-lived batch instead of the detail-request throttle.
+    MAX_CATEGORY_REQUESTS = 6
+    # Keep briefly delayed fixtures, but do not surface stale not-started rows
+    # from earlier in the day as upcoming matches.
+    UPCOMING_START_GRACE_SECONDS = 30 * 60
     # Jittered gap between any two requests (seconds).
     MIN_GAP_RANGE = (1.8, 3.6)
     # Re-warm session if older than this (seconds).
@@ -153,13 +171,26 @@ class SofascoreScraper:
         return AsyncSession(
             impersonate=self._impersonate,
             headers={
-                "Accept": "*/*",
+                "Accept": "application/json, text/plain, */*",
                 "Accept-Language": self._accept_lang,
                 "Referer": f"{SOFASCORE_WEB}/",
                 "Origin": SOFASCORE_WEB,
+                "Cache-Control": "no-cache",
             },
             timeout=20,
         )
+
+    @staticmethod
+    def _requested_with_token() -> str:
+        """Return the rolling token used by Sofascore's web client.
+
+        The frontend hashes the current 30-minute Unix bucket and sends the
+        first six hex characters as ``X-Requested-With``.  A conventional
+        ``XMLHttpRequest`` value now causes some API routes to return a masked
+        404 response.
+        """
+        bucket = int(time.time()) // 1800
+        return hashlib.sha256(str(bucket).encode()).hexdigest()[:6]
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
@@ -246,7 +277,10 @@ class SofascoreScraper:
                 await self._throttle()
                 try:
                     session = await self._get_session()
-                    resp = await session.get(url)
+                    resp = await session.get(
+                        url,
+                        headers={"X-Requested-With": self._requested_with_token()},
+                    )
                 except Exception as e:
                     self.last_fetch_error = {
                         "url": url,
@@ -254,6 +288,8 @@ class SofascoreScraper:
                         "message": f"Request error: {e}",
                     }
                     logger.warning(f"Request error on {url}: {e}")
+                    if attempt + 1 >= retries:
+                        break
                     await self._rotate_session()
                     await asyncio.sleep(2 * (attempt + 1) + random.uniform(0.5, 2.0))
                     continue
@@ -281,6 +317,9 @@ class SofascoreScraper:
                     "status": status,
                     "message": "Rate limited by Sofascore",
                 }
+                if attempt + 1 >= retries:
+                    logger.warning(f"Rate limited (429) on {url}; retries exhausted")
+                    break
                 wait = (2 ** attempt) * 5 + random.uniform(2, 6)
                 logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
@@ -295,6 +334,9 @@ class SofascoreScraper:
                     "status": status,
                     "message": "Forbidden by Sofascore",
                 }
+                if attempt + 1 >= retries:
+                    logger.warning(f"Forbidden (403) on {url}; retries exhausted")
+                    break
                 wait = (2 ** attempt) * 3 + random.uniform(3, 7)
                 logger.warning(f"Forbidden (403) on {url} – rotating session")
                 await self._rotate_session()
@@ -311,6 +353,11 @@ class SofascoreScraper:
                         "status": status,
                         "message": "List endpoint returned 404",
                     }
+                    if attempt + 1 >= retries:
+                        logger.warning(
+                            f"404 on list endpoint {url}; retries exhausted"
+                        )
+                        break
                     wait = (2 ** attempt) * 3 + random.uniform(2, 5)
                     logger.warning(
                         f"404 on list endpoint {url} – treating as bot-protection, "
@@ -350,6 +397,9 @@ class SofascoreScraper:
                     "status": status,
                     "message": "Sofascore server error",
                 }
+                if attempt + 1 >= retries:
+                    logger.warning(f"Server error ({status}) on {url}; retries exhausted")
+                    break
                 wait = (2 ** attempt) * 2 + random.uniform(1, 2)
                 logger.warning(f"Server error ({status}) on {url}, retrying in {wait:.1f}s")
                 await asyncio.sleep(wait)
@@ -468,6 +518,39 @@ class SofascoreScraper:
                 continue
 
         return matches
+
+    async def get_match_result(self, event_id: str) -> MatchResult | None:
+        """Fetch one event and return its final score only when it is finished."""
+        data = await self._fetch_json(
+            f"{SOFASCORE_BASE}/event/{event_id}", retries=2
+        )
+        if not data:
+            return None
+
+        event = data.get("event") or data
+        status = event.get("status") or {}
+        status_type = str(status.get("type") or "").lower()
+        is_finished = status_type == "finished"
+        home_score = event.get("homeScore") or {}
+        away_score = event.get("awayScore") or {}
+
+        def _score(score_data: dict) -> int | None:
+            value = score_data.get("current")
+            if value is None:
+                value = score_data.get("normaltime")
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        return MatchResult(
+            event_id=str(event.get("id") or event_id),
+            is_finished=is_finished,
+            score_home=_score(home_score),
+            score_away=_score(away_score),
+            status_type=status_type,
+            status_desc=str(status.get("description") or ""),
+        )
 
     _STAT_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
 
@@ -660,12 +743,95 @@ class SofascoreScraper:
 
         return stats
 
+    async def _fetch_upcoming_by_category(self, date: str) -> dict | None:
+        """Fetch a daily schedule through the category endpoints.
+
+        Sofascore's former ``sport/.../scheduled-events`` aggregate endpoint
+        now returns 404, while the category index and per-category schedules
+        remain available.  Fetch those schedules concurrently and de-duplicate
+        the resulting events.
+        """
+        offset = int(datetime.now(TZ_TURKEY).utcoffset().total_seconds())
+        index_url = f"{SOFASCORE_BASE}/sport/football/{date}/{offset}/categories"
+        index_data = await self._fetch_json(index_url, retries=2)
+        if not index_data:
+            return None
+
+        category_ids = []
+        for entry in index_data.get("categories", []):
+            category = entry.get("category") or {}
+            category_id = category.get("id")
+            if category_id is not None and entry.get("totalEvents", 0):
+                category_ids.append(str(category_id))
+
+        category_ids = list(dict.fromkeys(category_ids))
+        if not category_ids:
+            self.last_fetch_error = None
+            return {"events": []}
+
+        semaphore = asyncio.Semaphore(self.MAX_CATEGORY_REQUESTS)
+
+        async def _fetch_category(category_id: str) -> dict | None:
+            url = f"{SOFASCORE_BASE}/category/{category_id}/scheduled-events/{date}"
+            for attempt in range(2):
+                try:
+                    async with semaphore:
+                        session = await self._get_session()
+                        response = await session.get(
+                            url,
+                            headers={"X-Requested-With": self._requested_with_token()},
+                        )
+                    if response.status_code == 200:
+                        return response.json()
+                    logger.warning(
+                        "Category schedule returned HTTP %s: %s",
+                        response.status_code,
+                        url,
+                    )
+                except Exception as exc:
+                    logger.warning("Category schedule request failed (%s): %s", url, exc)
+
+                if attempt == 0:
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+            return None
+
+        results = await asyncio.gather(
+            *(_fetch_category(category_id) for category_id in category_ids)
+        )
+
+        events_by_id: dict[str, dict] = {}
+        successful = 0
+        for result in results:
+            if result is None:
+                continue
+            successful += 1
+            for event in result.get("events", []):
+                event_id = event.get("id")
+                if event_id is not None:
+                    events_by_id[str(event_id)] = event
+
+        if successful == 0:
+            self.last_fetch_error = {
+                "url": index_url,
+                "status": None,
+                "message": "All category schedule requests failed",
+            }
+            return None
+
+        if successful < len(category_ids):
+            logger.warning(
+                "Upcoming schedule is partial: %s/%s categories fetched",
+                successful,
+                len(category_ids),
+            )
+
+        self.last_fetch_error = None
+        return {"events": list(events_by_id.values())}
+
     async def get_upcoming_matches(self) -> list[UpcomingMatch]:
         """Fetch today's upcoming (scheduled) football matches."""
         today = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
-        data = await self._fetch_json(
-            f"{SOFASCORE_BASE}/sport/football/scheduled-events/{today}"
-        )
+        data = await self._fetch_upcoming_by_category(today)
         if not data:
             logger.error("Failed to fetch upcoming matches")
             return []
@@ -689,15 +855,30 @@ class SofascoreScraper:
                 full_league = f"{country} - {league_name}" if country else league_name
 
                 start_ts = event.get("startTimestamp", 0)
-                start_time = str(start_ts) if start_ts else "0"
+                if not start_ts:
+                    continue
+                start_ts = int(start_ts)
+                if start_ts < int(time.time()) - self.UPCOMING_START_GRACE_SECONDS:
+                    continue
+                event_date = datetime.fromtimestamp(
+                    start_ts, tz=TZ_TURKEY
+                ).strftime("%Y-%m-%d")
+                if event_date != today:
+                    continue
+                start_time = str(start_ts)
 
                 round_info_data = event.get("roundInfo", {})
                 round_str = ""
-                if round_info_data:
-                    round_str = f"Round {round_info_data.get('round', '')}"
+                round_number = round_info_data.get("round") if round_info_data else None
+                if round_number is not None:
+                    round_str = f"Round {round_number}"
+
+                event_id = event.get("id")
+                if event_id is None:
+                    continue
 
                 matches.append(UpcomingMatch(
-                    event_id=str(event.get("id", "")),
+                    event_id=str(event_id),
                     home_team=home.get("name", "Unknown"),
                     away_team=away.get("name", "Unknown"),
                     league=full_league,
@@ -708,7 +889,7 @@ class SofascoreScraper:
                 logger.debug(f"Error parsing upcoming event: {e}")
                 continue
 
-        return matches
+        return sorted(matches, key=lambda match: int(match.start_time))
 
     async def get_match_form(self, event_id: str) -> dict:
         """Fetch pregame form for both teams (recent results, league position, rating)."""
@@ -783,8 +964,8 @@ class SofascoreScraper:
                 odds["away"] = decimal_val
         return odds
 
-    async def get_live_match_details(self, event_id: str) -> dict:
-        """Fetch enriched live-match detail payload: stats, form, votes, odds."""
+    async def get_anomaly_match_details(self, event_id: str) -> dict:
+        """Fetch enriched anomaly-event details: stats, form, votes, and odds."""
         stats_task = asyncio.create_task(self.get_match_statistics(event_id))
         form_task = asyncio.create_task(self.get_match_form(event_id))
         votes_task = asyncio.create_task(self.get_match_votes(event_id))

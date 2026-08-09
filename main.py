@@ -8,6 +8,7 @@ import logging
 import json
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -21,13 +22,13 @@ from db import (
     bulk_update_anomaly_status, delete_anomalies,
     soft_delete_anomalies, soft_delete_all_anomalies,
     restore_anomalies, get_deleted_anomalies, purge_deleted_anomalies,
+    get_deleted_anomaly_summary,
     get_analyses, delete_analyses, clear_analyses,
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
     clear_database,
-    get_live_actions, set_live_action, bulk_set_live_actions, get_following_live_matches,
 )
-from workers import live_scan, upcoming_scan
+from workers import anomaly_scan, upcoming_scan, finished_match_scan
 from scraper import scraper
 from notifier import send_telegram
 
@@ -46,17 +47,29 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
-    # Worker 1: live scan every N seconds
+    # Worker 1: anomaly scan every N seconds
     scheduler.add_job(
-        live_scan,
+        anomaly_scan,
         "interval",
         seconds=config.SCAN_INTERVAL_SECONDS,
-        id="live_scan",
+        id="anomaly_scan",
         max_instances=1,
         misfire_grace_time=30,
     )
 
-    # Worker 2: upcoming analysis at 07:00 and 19:00 Turkey time
+    # Worker 2: finalize completed signal matches every 30 minutes.
+    scheduler.add_job(
+        finished_match_scan,
+        "interval",
+        minutes=config.FINISHED_SCAN_INTERVAL_MINUTES,
+        id="finished_match_scan",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+        next_run_time=datetime.now(config.TZ_TURKEY),
+    )
+
+    # Worker 3: upcoming analysis at 07:00 and 19:00 Turkey time
     scheduler.add_job(
         upcoming_scan,
         "cron",
@@ -80,14 +93,16 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
     logger.info(
-        f"Scheduler started — live scan every {config.SCAN_INTERVAL_SECONDS}s, "
+        f"Scheduler started — anomaly scan every {config.SCAN_INTERVAL_SECONDS}s, "
+        f"finished-match scan every {config.FINISHED_SCAN_INTERVAL_MINUTES}m, "
         f"upcoming at 07:00/19:00 Istanbul"
     )
 
     # Startup notification
     await send_telegram(
         "✅ <b>Anomali Bot başlatıldı!</b>\n\n"
-        f"⏱ Canlı tarama: her {config.SCAN_INTERVAL_SECONDS} saniye\n"
+        f"⏱ Anomali taraması: her {config.SCAN_INTERVAL_SECONDS} saniye\n"
+        f"🏁 Biten maç kontrolü: her {config.FINISHED_SCAN_INTERVAL_MINUTES} dakika\n"
         "📅 Maç analizi: 07:00 / 19:00 (İstanbul)\n"
         f"🌐 Dashboard: http://{config.HOST}:{config.PORT}"
     )
@@ -180,14 +195,16 @@ async def api_clear_anomalies():
 
 
 @app.get("/api/anomalies/deleted")
-async def api_get_deleted_anomalies():
-    rows = await get_deleted_anomalies()
+async def api_get_deleted_anomalies(result: str | None = None):
+    if result not in (None, "successful", "failed", "pending", "unresolved"):
+        return JSONResponse({"error": "Invalid result filter"}, status_code=400)
+    rows = await get_deleted_anomalies(result_filter=result)
     for row in rows:
         if isinstance(row.get("triggered_rules"), str):
             row["triggered_rules"] = json.loads(row["triggered_rules"])
         if isinstance(row.get("stats_snapshot"), str):
             row["stats_snapshot"] = json.loads(row["stats_snapshot"])
-    return rows
+    return {"items": rows, "summary": await get_deleted_anomaly_summary()}
 
 
 @app.post("/api/anomalies/restore")
@@ -196,8 +213,8 @@ async def api_restore_anomalies(request: Request):
     ids = body.get("ids", [])
     if not ids:
         return JSONResponse({"error": "No ids provided"}, status_code=400)
-    await restore_anomalies(ids)
-    return {"ok": True}
+    restored = await restore_anomalies(ids)
+    return {"ok": True, "restored": restored}
 
 
 @app.post("/api/anomalies/purge")
@@ -243,7 +260,16 @@ async def api_clear_analyses():
 
 @app.get("/api/upcoming")
 async def api_upcoming(date: str | None = None, status: str | None = None):
-    rows = await get_upcoming_matches_db(scan_date=date, status_filter=status)
+    min_start_time = None
+    if date is None:
+        date = datetime.now(config.TZ_TURKEY).strftime("%Y-%m-%d")
+        min_start_time = int(time.time()) - scraper.UPCOMING_START_GRACE_SECONDS
+    rows = await get_upcoming_matches_db(
+        scan_date=date,
+        status_filter=status,
+        min_start_time=min_start_time,
+        limit=2000,
+    )
     return rows
 
 
@@ -302,197 +328,65 @@ async def api_status():
     return {"status": "running", "scheduler_jobs": jobs}
 
 
-# ---- Live Matches Endpoints ----
+# ---- Anomaly Match Details ----
 
-# Short-TTL in-memory caches so the dashboard tab is fast and we don't hammer
-# Sofascore's rate limit. Sofascore's live endpoint already has heavy bot
-# protection; re-using the last scrape for ~20s is safe.
-_live_list_cache: dict = {"matches": [], "ts": 0.0, "has_value": False}
-_live_list_lock = asyncio.Lock()
-
-_live_details_cache: dict[str, dict] = {}  # event_id -> {"data": dict, "ts": float}
-_live_details_locks: dict[str, asyncio.Lock] = {}
-
-LIVE_LIST_TTL = 20.0
-LIVE_DETAILS_TTL = 45.0
+_anomaly_details_cache: dict[str, dict] = {}
+_anomaly_details_locks: dict[str, asyncio.Lock] = {}
+ANOMALY_DETAILS_TTL = 45.0
 
 
-async def _get_live_matches_cached(retries: int = 5):
-    async with _live_list_lock:
-        now = time.monotonic()
-        if _live_list_cache["has_value"] and (now - _live_list_cache["ts"]) < LIVE_LIST_TTL:
-            return _live_list_cache["matches"], None, False
-
-        fresh = await scraper.get_live_matches(retries=retries)
-        fetch_error = scraper.last_live_fetch_error
-        if fetch_error:
-            if _live_list_cache["has_value"]:
-                return _live_list_cache["matches"], fetch_error, True
-            return [], fetch_error, False
-
-        if fresh or not fetch_error:
-            _live_list_cache["matches"] = fresh
-            _live_list_cache["ts"] = now
-            _live_list_cache["has_value"] = True
-    return _live_list_cache["matches"], None, False
-
-
-@app.get("/api/live-matches")
-async def api_live_matches():
-    """Return all currently-live football matches enriched with user action status."""
-    matches, fetch_error, stale = await _get_live_matches_cached(retries=2)
-    if fetch_error and not stale:
-        detail = fetch_error.get("message", "Canlı maç listesi alınamadı")
-        status = fetch_error.get("status")
-        suffix = f" (HTTP {status})" if status else ""
-        return JSONResponse(
-            {"error": f"Sofascore canlı maç listesi alınamadı: {detail}{suffix}"},
-            status_code=502,
-        )
-
-    event_ids = [m.event_id for m in matches]
-    actions = await get_live_actions(event_ids) if event_ids else {}
-
-    payload = []
-    for m in matches:
-        payload.append({
-            "event_id": m.event_id,
-            "home_team": m.home_team,
-            "away_team": m.away_team,
-            "score_home": m.score_home,
-            "score_away": m.score_away,
-            "minute": m.minute,
-            "league": m.league,
-            "status_desc": m.status_desc,
-            "status": actions.get(m.event_id, "new"),
-        })
-    return payload
-
-
-@app.get("/api/live-matches/{event_id}/details")
-async def api_live_match_details(event_id: str):
-    """Return enriched stats/form/votes/odds for a single live match (cached 45s)."""
+@app.get("/api/anomalies/{event_id}/details")
+async def api_anomaly_match_details(event_id: str):
+    """Return enriched stats/form/votes/odds for an anomaly event."""
     now = time.monotonic()
-    cached = _live_details_cache.get(event_id)
-    if cached and (now - cached["ts"]) < LIVE_DETAILS_TTL:
+    cached = _anomaly_details_cache.get(event_id)
+    if cached and (now - cached["ts"]) < ANOMALY_DETAILS_TTL:
         return cached["data"]
 
-    lock = _live_details_locks.setdefault(event_id, asyncio.Lock())
+    lock = _anomaly_details_locks.setdefault(event_id, asyncio.Lock())
     async with lock:
-        cached = _live_details_cache.get(event_id)
-        if cached and (time.monotonic() - cached["ts"]) < LIVE_DETAILS_TTL:
+        cached = _anomaly_details_cache.get(event_id)
+        if cached and (time.monotonic() - cached["ts"]) < ANOMALY_DETAILS_TTL:
             return cached["data"]
 
-        details = await scraper.get_live_match_details(event_id)
-        _live_details_cache[event_id] = {"data": details, "ts": time.monotonic()}
+        details = await scraper.get_anomaly_match_details(event_id)
+        _anomaly_details_cache[event_id] = {"data": details, "ts": time.monotonic()}
 
         # Opportunistic cleanup: drop old entries to stop unbounded growth.
-        if len(_live_details_cache) > 400:
-            cutoff = time.monotonic() - LIVE_DETAILS_TTL * 4
-            stale = [k for k, v in _live_details_cache.items() if v["ts"] < cutoff]
+        if len(_anomaly_details_cache) > 400:
+            cutoff = time.monotonic() - ANOMALY_DETAILS_TTL * 4
+            stale = [k for k, v in _anomaly_details_cache.items() if v["ts"] < cutoff]
             for k in stale:
-                _live_details_cache.pop(k, None)
-                _live_details_locks.pop(k, None)
+                _anomaly_details_cache.pop(k, None)
+                _anomaly_details_locks.pop(k, None)
 
         return details
 
 
-@app.get("/api/live-matches-2")
-async def api_live_matches_2():
-    """Manual live-match research view: fresh live list only.
-
-    Details are intentionally loaded per match from the dashboard so this
-    request cannot hang while dozens of Sofascore detail endpoints are fetched.
-    """
-    matches = await scraper.get_live_matches(retries=1)
-    fetch_error = scraper.last_live_fetch_error
-    if fetch_error:
-        detail = fetch_error.get("message", "Canlı maç listesi alınamadı")
-        status = fetch_error.get("status")
-        suffix = f" (HTTP {status})" if status else ""
-        return JSONResponse(
-            {"error": f"Sofascore canlı maç listesi alınamadı: {detail}{suffix}"},
-            status_code=502,
-        )
-
-    event_ids = [m.event_id for m in matches]
-    actions = await get_live_actions(event_ids) if event_ids else {}
-
-    payload = []
-    for m in matches:
-        payload.append({
-            "event_id": m.event_id,
-            "home_team": m.home_team,
-            "away_team": m.away_team,
-            "score_home": m.score_home,
-            "score_away": m.score_away,
-            "minute": m.minute,
-            "league": m.league,
-            "status_desc": m.status_desc,
-            "status": actions.get(m.event_id, "new"),
-            "details": None,
-        })
-    return payload
-
-
-@app.get("/api/live-matches-2/{event_id}/stats")
-async def api_live_match_2_stats(event_id: str):
-    """Return only match statistics for the fast text-focused live-2 view."""
-    try:
-        stats = await scraper.get_match_statistics(event_id)
-    except Exception as e:
-        logger.error("Live-2 stats failed for event %s: %s", event_id, e, exc_info=True)
-        return {"stats": None, "error": "İstatistik servisi hata verdi"}
-
-    if not stats:
-        return {"stats": None, "error": ""}
-    return {"stats": stats.to_dict(), "error": ""}
-
-
-@app.get("/api/live-detections")
-async def api_live_detections():
-    """Return persisted live matches marked as following."""
-    return await get_following_live_matches()
-
-
-@app.post("/api/live-matches/{event_id}/status")
-async def api_live_match_status(event_id: str, request: Request):
-    body = await request.json()
-    status = body.get("status")
-    if status not in ("new", "bet_placed", "ignored", "following"):
-        return JSONResponse({"error": "Invalid status"}, status_code=400)
-    await set_live_action(event_id, status, body.get("match"))
-    return {"ok": True}
-
-
-@app.post("/api/live-matches/bulk-status")
-async def api_live_match_bulk_status(request: Request):
-    body = await request.json()
-    event_ids = body.get("event_ids", [])
-    status = body.get("status")
-    if not event_ids or status not in ("new", "bet_placed", "ignored", "following"):
-        return JSONResponse({"error": "Invalid request"}, status_code=400)
-    metadata_by_id = {
-        str(item.get("event_id")): item
-        for item in body.get("matches", [])
-        if item.get("event_id") is not None
-    }
-    await bulk_set_live_actions(event_ids, status, metadata_by_id)
-    return {"ok": True}
-
-
 # ---- Manual triggers (for testing) ----
-
-@app.post("/api/trigger/live-scan")
-async def trigger_live_scan():
-    asyncio.create_task(live_scan())
-    return {"ok": True, "message": "Live scan triggered"}
-
 
 @app.post("/api/trigger/upcoming-scan")
 async def trigger_upcoming_scan():
-    asyncio.create_task(upcoming_scan("manual"))
-    return {"ok": True, "message": "Upcoming scan triggered"}
+    result = await upcoming_scan("manual", analyze=False)
+    if not result.get("ok"):
+        status_code = 409 if result.get("busy") else 502
+        return JSONResponse(
+            {"error": result.get("error") or "Upcoming matches could not be fetched"},
+            status_code=status_code,
+        )
+    return result
+
+
+@app.post("/api/trigger/finished-scan")
+async def trigger_finished_scan():
+    result = await finished_match_scan()
+    if not result.get("ok"):
+        status_code = 409 if result.get("busy") else 500
+        return JSONResponse(
+            {"error": result.get("error") or "Finished-match scan is busy"},
+            status_code=status_code,
+        )
+    return result
 
 
 if __name__ == "__main__":

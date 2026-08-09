@@ -483,39 +483,6 @@ select {
     gap: 10px;
 }
 
-.segmented-control {
-    display: inline-flex;
-    align-items: center;
-    padding: 4px;
-    border-radius: 14px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border-soft);
-    gap: 4px;
-}
-
-.segment-btn {
-    min-height: 34px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--text-soft);
-    font-size: 0.82rem;
-    font-weight: 700;
-    cursor: pointer;
-    transition: var(--transition);
-}
-
-.segment-btn:hover {
-    color: var(--text);
-    background: rgba(255, 255, 255, 0.06);
-}
-
-.segment-btn.active {
-    color: #07111f;
-    background: linear-gradient(135deg, var(--blue), #a8d6ff);
-}
-
 .selected-count {
     display: inline-flex;
     align-items: center;
@@ -1328,7 +1295,7 @@ tbody tr.state-following.anomaly-row:hover td {
 }
 
 #deleted-table {
-    min-width: 1200px;
+    min-width: 1580px;
 }
 
 #deleted-table th:nth-child(2),
@@ -1339,6 +1306,90 @@ tbody tr.state-following.anomaly-row:hover td {
 #deleted-table th:last-child,
 #deleted-table td:last-child {
     min-width: 110px;
+}
+
+.result-summary-wrap {
+    overflow-x: auto;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--panel-soft);
+}
+
+.result-summary-table {
+    min-width: 1080px;
+}
+
+.result-summary-table thead th {
+    position: static;
+    padding: 13px 16px;
+    text-align: center;
+}
+
+.result-summary-table tbody td {
+    padding: 16px;
+    color: var(--text);
+    font-family: 'Sora', system-ui, sans-serif;
+    font-size: 1.35rem;
+    font-weight: 700;
+    text-align: center;
+}
+
+.result-summary-table .summary-value-success {
+    color: var(--success);
+}
+
+.result-summary-table .summary-value-failed {
+    color: var(--danger);
+}
+
+.result-summary-table .summary-value-pending {
+    color: var(--amber);
+}
+
+.result-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-pill);
+    font-size: 0.78rem;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.result-successful {
+    color: var(--success);
+    border-color: rgba(49, 208, 164, 0.3);
+    background: var(--success-bg);
+}
+
+.result-failed {
+    color: var(--danger);
+    border-color: rgba(255, 106, 115, 0.3);
+    background: var(--danger-bg);
+}
+
+.result-unresolved {
+    color: var(--text-muted);
+    border-color: var(--border-strong);
+    background: rgba(129, 146, 169, 0.12);
+}
+
+.result-pending {
+    color: var(--amber);
+    border-color: rgba(247, 195, 95, 0.3);
+    background: var(--warning-bg);
+}
+
+.dominant-team {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.score-pill-final {
+    border-color: var(--border-strong);
+    background: var(--surface-alt);
 }
 
 #upcoming-table th:nth-child(2),
@@ -1532,49 +1583,34 @@ tbody tr.state-following.anomaly-row:hover td {
     }
 }
 
-/* ===== Live Matches Tab ===== */
+/* ===== Anomaly Details ===== */
 
-.live-row-main {
-    cursor: pointer;
-    transition: background var(--transition);
-}
-
-.live-row-main:hover {
-    background: rgba(104, 181, 255, 0.05);
-}
-
-.live-row-main.expanded {
-    background: rgba(104, 181, 255, 0.08);
-}
-
-.live-row-details > td {
+.anomaly-row-details > td {
     padding: 18px 22px 24px;
     background: var(--panel-soft);
     border-top: 1px dashed var(--border-soft);
 }
 
-.live-minute {
-    background: var(--accent-bg);
-    color: var(--accent);
-    font-weight: 700;
+.anomaly-row-main.expanded {
+    background: rgba(104, 181, 255, 0.08);
 }
 
-.live-details {
+.anomaly-details {
     display: block;
 }
 
-.live-details-grid {
+.anomaly-details-grid {
     display: grid;
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     gap: 28px;
     align-items: flex-start;
 }
 
-.live-details-col-stats {
+.anomaly-details-col-stats {
     min-width: 0;
 }
 
-.live-details-title {
+.anomaly-details-title {
     font-size: 0.82rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -1582,8 +1618,8 @@ tbody tr.state-following.anomaly-row:hover td {
     margin-bottom: 12px;
 }
 
-.live-details-empty,
-.live-details-loading {
+.anomaly-details-empty,
+.anomaly-details-loading {
     padding: 14px 0;
     color: var(--text-muted);
     font-size: 0.92rem;
@@ -1778,194 +1814,10 @@ tbody tr.state-following.anomaly-row:hover td {
     color: var(--text-muted);
 }
 
-/* ===== Live Matches 2 ===== */
-
-.live2-select-row {
-    display: flex;
-    justify-content: flex-end;
-    margin: 0 0 14px;
-}
-
-.live2-select-all {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-soft);
-    font-size: 0.88rem;
-    font-weight: 700;
-}
-
-.live2-list {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 16px;
-}
-
-.live2-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: rgba(9, 19, 34, 0.78);
-    box-shadow: var(--shadow-soft);
-    overflow: hidden;
-}
-
-.live2-card.state-bet_placed {
-    border-color: rgba(247, 195, 95, 0.34);
-}
-
-.live2-card.state-ignored {
-    opacity: 0.72;
-    border-color: rgba(255, 106, 115, 0.28);
-}
-
-.live2-card.state-following {
-    border-color: rgba(49, 208, 164, 0.34);
-    box-shadow: 0 18px 34px rgba(49, 208, 164, 0.08);
-}
-
-.live2-card-head {
-    display: grid;
-    grid-template-columns: auto minmax(220px, 1fr) auto auto;
-    gap: 14px;
-    align-items: center;
-    padding: 16px 18px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.live-detection-card .live2-card-head {
-    grid-template-columns: minmax(220px, 1fr) auto auto;
-}
-
-.live2-check {
-    display: inline-flex;
-    align-items: center;
-}
-
-.live2-match {
-    min-width: 0;
-}
-
-.live2-meta {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 0.82rem;
-    overflow-wrap: anywhere;
-}
-
-.live2-scorebox {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.live2-actions {
-    justify-content: flex-end;
-}
-
-.live2-text-data {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 18px;
-    padding: 12px 18px 16px;
-    color: var(--text-soft);
-    font-size: 0.9rem;
-    border-top: 1px solid var(--border-soft);
-}
-
-.live2-text-data strong {
-    color: var(--text-muted);
-    font-weight: 700;
-}
-
-.live2-stats-text {
-    padding: 0 18px 16px;
-    color: var(--text-soft);
-    font-size: 0.9rem;
-    line-height: 1.65;
-}
-
-.live2-analyst-text {
-    padding: 12px 0 10px;
-    color: var(--text);
-    border-top: 1px dashed var(--border-soft);
-}
-
-.live2-analyst-text strong,
-.live2-stat-lines strong {
-    color: var(--text-muted);
-}
-
-.live2-stat-lines {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px 18px;
-}
-
-.live2-stat-footnote {
-    margin-top: 10px;
-    color: var(--text-muted);
-    font-size: 0.78rem;
-}
-
-.live2-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
-    gap: 24px;
-    padding: 18px;
-}
-
-.live2-stats,
-.live2-context {
-    min-width: 0;
-}
-
-.live2-form-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 12px;
-}
-
-.live2-team-context {
-    padding: 0 0 12px;
-    border-bottom: 1px dashed var(--border-soft);
-}
-
-.live2-team-context:last-child {
-    border-bottom: 0;
-}
-
-.live2-title-spaced {
-    margin-top: 18px;
-}
 
 @media (max-width: 900px) {
-    .live-details-grid {
+    .anomaly-details-grid {
         grid-template-columns: 1fr;
         gap: 18px;
-    }
-
-    .live2-card-head {
-        grid-template-columns: auto minmax(0, 1fr);
-    }
-
-    .live-detection-card .live2-card-head {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .live2-scorebox,
-    .live2-actions {
-        grid-column: 2;
-        justify-content: flex-start;
-    }
-
-    .live2-body {
-        grid-template-columns: 1fr;
-        gap: 18px;
-    }
-
-    .live2-stat-lines {
-        grid-template-columns: 1fr;
     }
 }

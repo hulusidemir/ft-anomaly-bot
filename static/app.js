@@ -6,20 +6,14 @@ const API = {
     bulkStatus: '/api/anomalies/bulk-status',
     deleteAnomalies: '/api/anomalies/delete',
     clearAnomalies: '/api/anomalies/clear',
-    deletedAnomalies: '/api/anomalies/deleted',
+    deletedAnomalies: (result) => `/api/anomalies/deleted${result ? `?result=${result}` : ''}`,
     restoreAnomalies: '/api/anomalies/restore',
     purgeAnomalies: '/api/anomalies/purge',
     purgeAllAnomalies: '/api/anomalies/purge-all',
     analyses: '/api/analyses',
     deleteAnalyses: '/api/analyses/delete',
     clearAnalyses: '/api/analyses/clear',
-    liveMatches: '/api/live-matches',
-    liveMatches2: '/api/live-matches-2',
-    liveMatch2Stats: (id) => `/api/live-matches-2/${encodeURIComponent(id)}/stats`,
-    liveDetections: '/api/live-detections',
-    liveMatchDetails: (id) => `/api/live-matches/${encodeURIComponent(id)}/details`,
-    liveMatchStatus: (id) => `/api/live-matches/${encodeURIComponent(id)}/status`,
-    liveMatchBulkStatus: '/api/live-matches/bulk-status',
+    anomalyDetails: (id) => `/api/anomalies/${encodeURIComponent(id)}/details`,
     upcoming: (status) => `/api/upcoming${status ? `?status=${status}` : ''}`,
     updateUpcomingStatus: (id) => `/api/upcoming/${id}/status`,
     bulkUpcomingStatus: '/api/upcoming/bulk-status',
@@ -27,8 +21,8 @@ const API = {
     clearUpcoming: '/api/upcoming/clear',
     clearDatabase: '/api/database/clear',
     status: '/api/status',
-    triggerLive: '/api/trigger/live-scan',
     triggerUpcoming: '/api/trigger/upcoming-scan',
+    triggerFinished: '/api/trigger/finished-scan',
 };
 
 const ICONS = {
@@ -44,24 +38,21 @@ const ICONS = {
 let anomalies = [];
 let analyses = [];
 let upcomingMatches = [];
-let liveMatches = [];
-let liveMatches2 = [];
-let liveDetections = [];
 let deletedAnomalies = [];
+let deletedSummary = {
+    total: 0, successful: 0, failed: 0, pending: 0, unresolved: 0,
+    evaluated: 0, finished_matches: 0, success_rate: 0,
+};
 let schedulerJobs = [];
-let live2StatsRun = 0;
 
 const selectedAnomalies = new Set();
 const selectedAnalyses = new Set();
 const selectedUpcoming = new Set();
-const selectedLive = new Set();
-const selectedLive2 = new Set();
 const selectedDeleted = new Set();
 
-const liveDetailsCache = new Map();
-const liveDetailsInFlight = new Map();
-const expandedLiveRows = new Set();
-const LIVE2_STATS_CONCURRENCY = 2;
+const anomalyDetailsCache = new Map();
+const anomalyDetailsInFlight = new Map();
+const expandedAnomalyRows = new Set();
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -82,8 +73,6 @@ $$('.tab').forEach((tab) => {
         $$('.tab-content').forEach((item) => item.classList.remove('active'));
         tab.classList.add('active');
         $(`#tab-${tab.dataset.tab}`).classList.add('active');
-        if (tab.dataset.tab === 'live' && !liveMatches.length) loadLiveMatches();
-        if (tab.dataset.tab === 'detections') loadLiveDetections();
         if (tab.dataset.tab === 'deleted') loadDeletedAnomalies();
     });
 });
@@ -124,20 +113,6 @@ async function apiFetch(url, opts = {}) {
         return await response.json();
     } catch (error) {
         toast(`İstek başarısız: ${error.message}`, true);
-        return null;
-    }
-}
-
-async function apiFetchQuiet(url, opts = {}) {
-    try {
-        const response = await fetch(url, {
-            headers: { 'Content-Type': 'application/json' },
-            ...opts,
-        });
-
-        if (!response.ok) return null;
-        return await response.json();
-    } catch (_) {
         return null;
     }
 }
@@ -188,7 +163,7 @@ function updateOverview() {
     setText('#metric-anomalies-detail', `${newAnomalies} yeni, ${followingAnomalies} takipte`);
 
     setText('#metric-following', String(followingAnomalies + followingUpcoming));
-    setText('#metric-following-detail', `${followingAnomalies} canlı alarm, ${followingUpcoming} yaklaşan maç`);
+    setText('#metric-following-detail', `${followingAnomalies} anomali, ${followingUpcoming} yaklaşan maç`);
 
     setText('#metric-analyses', String(analyses.length));
     setText('#metric-analyses-detail', latestAnalysis
@@ -275,7 +250,6 @@ function initSortableHeaders() {
 
             if (tableId === 'anomaly-table') renderAnomalies();
             if (tableId === 'upcoming-table') renderUpcoming();
-            if (tableId === 'live-table') renderLiveMatches();
         });
     });
 }
@@ -303,46 +277,6 @@ function filterBySearch(data, query, getSearchText) {
 function sofascoreEventUrl(eventId) {
     if (!eventId) return '#';
     return `https://www.sofascore.com/event/${encodeURIComponent(eventId)}`;
-}
-
-function getSegmentValue(containerId) {
-    const active = document.querySelector(`#${containerId} .segment-btn.active`);
-    return active ? active.dataset.value : 'all';
-}
-
-function applyDrawFilter(data, mode) {
-    if (mode === 'draw') {
-        return data.filter((item) => Number(item.score_home) === Number(item.score_away));
-    }
-    if (mode === 'non_draw') {
-        return data.filter((item) => Number(item.score_home) !== Number(item.score_away));
-    }
-    return data;
-}
-
-function bindSegmentedFilter(containerId, onChange) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    container.querySelectorAll('.segment-btn').forEach((button) => {
-        button.addEventListener('click', () => {
-            container.querySelectorAll('.segment-btn').forEach((item) => item.classList.remove('active'));
-            button.classList.add('active');
-            onChange();
-        });
-    });
-}
-
-function liveMatchSnapshot(match) {
-    return {
-        event_id: match.event_id,
-        home_team: match.home_team || '',
-        away_team: match.away_team || '',
-        score_home: Number(match.score_home) || 0,
-        score_away: Number(match.score_away) || 0,
-        minute: Number(match.minute) || 0,
-        league: match.league || '',
-        status_desc: match.status_desc || '',
-    };
 }
 
 async function loadAnomalies() {
@@ -409,8 +343,11 @@ function renderAnomalies() {
             ? `<span class="badge badge-alert badge-alert-multi">${alertNumber}. uyarı</span>`
             : '<span class="badge badge-alert">1. uyarı</span>';
 
+        const isExpanded = expandedAnomalyRows.has(item.id);
+        const expandedClass = isExpanded ? 'expanded' : '';
+        const detailsHidden = isExpanded ? '' : 'display:none;';
         return `
-        <tr class="${stateClass}" data-id="${item.id}">
+        <tr class="anomaly-row-main ${expandedClass} ${stateClass}" data-id="${item.id}">
             <td class="col-check"><input type="checkbox" class="chk-anomaly" data-id="${item.id}"></td>
             <td>
                 <div class="cell-stack">
@@ -434,14 +371,22 @@ function renderAnomalies() {
             <td><span class="time-pill">${time}</span></td>
             <td>
                 <div class="row-actions row-actions-icons">
+                    <button class="icon-btn icon-btn-details${isExpanded ? ' active' : ''}" onclick="toggleAnomalyDetails(${item.id})" title="Detay" aria-label="Detay">${ICONS.details}</button>
                     <button class="icon-btn icon-btn-bet${item.status === 'bet_placed' ? ' active' : ''}" onclick="setStatus(${item.id}, 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
                     <button class="icon-btn icon-btn-ignore${item.status === 'ignored' ? ' active' : ''}" onclick="setStatus(${item.id}, 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
                     <button class="icon-btn icon-btn-follow${item.status === 'following' ? ' active' : ''}" onclick="setStatus(${item.id}, 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
                     <button class="icon-btn icon-btn-delete" onclick="deleteAnomalyRow(${item.id})" title="Sil" aria-label="Sil">${ICONS.delete}</button>
                 </div>
             </td>
+        </tr>
+        <tr class="anomaly-row-details" data-aid-details="${item.id}" style="${detailsHidden}">
+            <td colspan="10">
+                <div class="anomaly-details">Detaylar yükleniyor...</div>
+            </td>
         </tr>`;
     }).join('');
+
+    expandedAnomalyRows.forEach((aid) => renderAnomalyDetails(aid));
 
     $$('.chk-anomaly').forEach((checkbox) => {
         checkbox.addEventListener('change', () => {
@@ -856,198 +801,32 @@ $('#btn-trigger-upcoming').addEventListener('click', async () => {
     const button = $('#btn-trigger-upcoming');
     setButtonBusy(button, 'Çekiliyor...', 'Maçları Çek', true);
 
-    const result = await apiPost(API.triggerUpcoming, {});
-    if (result && result.ok) {
-        toast('Yaklaşan maçlar çekiliyor, birkaç saniye sonra tablo güncellenecek');
-        setTimeout(loadUpcoming, 8000);
-    }
-
-    setTimeout(() => {
+    try {
+        const result = await apiPost(API.triggerUpcoming, {});
+        if (result && result.ok) {
+            await loadUpcoming();
+            toast(`${result.count} yaklaşan maç güncellendi`);
+        }
+    } finally {
         setButtonBusy(button, 'Çekiliyor...', 'Maçları Çek', false);
-    }, 10000);
+    }
 });
 
-/* ===== Live Matches ===== */
-
-async function loadLiveMatches() {
-    const tbody = $('#live-body');
-    const button = $('#btn-refresh-live');
-    if (tbody) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maçlar çekiliyor...</td></tr>';
-    }
-    setButtonBusy(button, 'Çekiliyor...', 'Güncel Canlı Maçları Çek', true);
-
-    const data = await apiFetch(API.liveMatches);
-    setButtonBusy(button, 'Çekiliyor...', 'Güncel Canlı Maçları Çek', false);
-
-    if (!data) {
-        if (tbody) {
-            tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maç listesi alınamadı. Tekrar deneyin.</td></tr>';
-        }
-        return;
-    }
-
-    liveMatches = data;
-    renderLiveMatches();
-    touchLastUpdated();
-}
-
-function getVisibleLiveMatches() {
-    const filter = ($('#filter-live-status') || {}).value || '';
-    const searchQuery = ($('#search-live') || {}).value || '';
-
-    let filtered = liveMatches;
-    if (filter) filtered = filtered.filter((item) => (item.status || 'new') === filter);
-
-    filtered = filterBySearch(filtered, searchQuery, (item) =>
-        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away}`
-    );
-
-    filtered = sortData(filtered, 'live-table', (item, key) => {
-        switch (key) {
-            case 'match':
-                return `${item.home_team} ${item.away_team}`.toLowerCase();
-            case 'score':
-                return item.score_home * 100 + item.score_away;
-            case 'minute':
-                return item.minute || 0;
-            case 'league':
-                return (item.league || '').toLowerCase();
-            default:
-                return '';
-        }
-    });
-
-    return filtered;
-}
-
-function renderLiveMatches() {
-    const tbody = $('#live-body');
-    if (!tbody) return;
-    const selectAll = $('#select-all-live');
-    selectedLive.clear();
-    if (selectAll) selectAll.checked = false;
-    updateLiveBulk();
-
-    const filtered = getVisibleLiveMatches();
-    setText('#live-count', `${liveMatches.length} maç`);
-
-    if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Canlı maç bulunamadı</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = filtered.map((item) => buildLiveRowHtml(item)).join('');
-
-    $$('.chk-live').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const eid = checkbox.dataset.eid;
-            if (checkbox.checked) selectedLive.add(eid);
-            else selectedLive.delete(eid);
-            updateLiveBulk();
-        });
-    });
-
-    $$('.live-row-main').forEach((row) => {
-        row.addEventListener('click', (event) => {
-            if (event.target.closest('button, input, .row-actions, .col-check')) return;
-            const url = sofascoreEventUrl(row.dataset.eid);
-            if (url && url !== '#') window.open(url, '_blank', 'noopener,noreferrer');
-        });
-    });
-
-    // Re-expand any previously-open rows
-    expandedLiveRows.forEach((eid) => renderLiveDetails(eid));
-}
-
-function buildLiveRowHtml(item) {
-    const statusValue = item.status || 'new';
-    const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
-    const expanded = expandedLiveRows.has(item.event_id) ? 'expanded' : '';
-    const statusDesc = item.status_desc ? ` • ${escHtml(item.status_desc)}` : '';
-    return `
-        <tr class="live-row-main ${stateClass} ${expanded}" data-eid="${escHtml(item.event_id)}" title="Sofascore sayfasını aç">
-            <td class="col-check"><input type="checkbox" class="chk-live" data-eid="${escHtml(item.event_id)}"></td>
-            <td>
-                <div class="cell-stack">
-                    <span class="match-link">${escHtml(item.home_team)} vs ${escHtml(item.away_team)}</span>
-                    <span class="cell-subtle">Etkinlik ID: ${escHtml(item.event_id)}${statusDesc}</span>
-                </div>
-            </td>
-            <td><span class="score-pill">${item.score_home} - ${item.score_away}</span></td>
-            <td><span class="table-tag live-minute">${item.minute || 0}'</span></td>
-            <td>${escHtml(item.league || '-')}</td>
-            <td>
-                <div class="row-actions row-actions-icons">
-                    <button class="icon-btn icon-btn-details${expandedLiveRows.has(item.event_id) ? ' active' : ''}" onclick="toggleLiveDetails('${escAttr(item.event_id)}')" title="Detayları gör" aria-label="Detayları gör">${ICONS.details}</button>
-                    <button class="icon-btn icon-btn-bet${statusValue === 'bet_placed' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
-                    <button class="icon-btn icon-btn-ignore${statusValue === 'ignored' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
-                    <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLiveStatus('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
-                </div>
-            </td>
-        </tr>
-        <tr class="live-row-details" data-eid-details="${escHtml(item.event_id)}" style="${expandedLiveRows.has(item.event_id) ? '' : 'display:none;'}">
-            <td colspan="6">
-                <div class="live-details">Detaylar yükleniyor...</div>
-            </td>
-        </tr>`;
-}
-
-function escAttr(value) {
-    return String(value || '').replace(/'/g, "\\'");
-}
-
-async function toggleLiveDetails(eventId) {
-    const detailsRow = document.querySelector(`[data-eid-details="${CSS.escape(eventId)}"]`);
-    const mainRow = document.querySelector(`.live-row-main[data-eid="${CSS.escape(eventId)}"]`);
-    if (!detailsRow) return;
-
-    const detailsBtn = mainRow ? mainRow.querySelector('.icon-btn-details') : null;
-
-    if (expandedLiveRows.has(eventId)) {
-        expandedLiveRows.delete(eventId);
-        detailsRow.style.display = 'none';
-        if (mainRow) mainRow.classList.remove('expanded');
-        if (detailsBtn) detailsBtn.classList.remove('active');
-        return;
-    }
-
-    expandedLiveRows.add(eventId);
-    detailsRow.style.display = '';
-    if (mainRow) mainRow.classList.add('expanded');
-    if (detailsBtn) detailsBtn.classList.add('active');
-    renderLiveDetails(eventId);
-    await ensureLiveDetails(eventId);
-    renderLiveDetails(eventId);
-}
-
-async function ensureLiveDetails(eventId) {
-    if (liveDetailsCache.has(eventId)) return liveDetailsCache.get(eventId);
-    if (liveDetailsInFlight.has(eventId)) return liveDetailsInFlight.get(eventId);
+async function ensureAnomalyDetails(eventId) {
+    if (anomalyDetailsCache.has(eventId)) return anomalyDetailsCache.get(eventId);
+    if (anomalyDetailsInFlight.has(eventId)) return anomalyDetailsInFlight.get(eventId);
 
     const promise = (async () => {
-        const data = await apiFetch(API.liveMatchDetails(eventId));
-        if (data) liveDetailsCache.set(eventId, data);
-        liveDetailsInFlight.delete(eventId);
+        const data = await apiFetch(API.anomalyDetails(eventId));
+        if (data) anomalyDetailsCache.set(eventId, data);
+        anomalyDetailsInFlight.delete(eventId);
         return data;
     })();
-    liveDetailsInFlight.set(eventId, promise);
+    anomalyDetailsInFlight.set(eventId, promise);
     return promise;
 }
 
-function renderLiveDetails(eventId) {
-    const container = document.querySelector(
-        `.live-row-details[data-eid-details="${CSS.escape(eventId)}"] .live-details`
-    );
-    if (!container) return;
-
-    const data = liveDetailsCache.get(eventId);
-    if (!data) {
-        container.innerHTML = '<div class="live-details-loading">Detaylar yükleniyor...</div>';
-        return;
-    }
-
-    const match = liveMatches.find((m) => m.event_id === eventId) || {};
+function buildMatchDetailsHtml(match, data) {
     const stats = data.stats || {};
     const form = data.form || { home: {}, away: {} };
     const votes = data.votes || {};
@@ -1102,26 +881,74 @@ function renderLiveDetails(eventId) {
     const formHtml = renderFormBlock(match, form);
     const expectationHtml = renderExpectationBlock(match, votes, odds);
 
-    container.innerHTML = `
-        <div class="live-details-grid">
-            <div class="live-details-col live-details-col-stats">
-                <h3 class="live-details-title">Maç İstatistikleri</h3>
-                ${statsHtml || '<div class="live-details-empty">İstatistik verisi henüz yok</div>'}
+    return `
+        <div class="anomaly-details-grid">
+            <div class="anomaly-details-col anomaly-details-col-stats">
+                <h3 class="anomaly-details-title">Maç İstatistikleri</h3>
+                ${statsHtml || '<div class="anomaly-details-empty">İstatistik verisi henüz yok</div>'}
             </div>
-            <div class="live-details-col">
-                <h3 class="live-details-title">Form Durumu</h3>
+            <div class="anomaly-details-col">
+                <h3 class="anomaly-details-title">Form Durumu</h3>
                 ${formHtml}
-                <h3 class="live-details-title" style="margin-top:18px;">Beklenti</h3>
+                <h3 class="anomaly-details-title" style="margin-top:18px;">Beklenti</h3>
                 ${expectationHtml}
             </div>
         </div>`;
+}
+
+async function toggleAnomalyDetails(anomalyId) {
+    const detailsRow = document.querySelector(`[data-aid-details="${anomalyId}"]`);
+    const mainRow = document.querySelector(`.anomaly-row-main[data-id="${anomalyId}"]`);
+    if (!detailsRow) return;
+
+    const detailsBtn = mainRow ? mainRow.querySelector('.icon-btn-details') : null;
+
+    if (expandedAnomalyRows.has(anomalyId)) {
+        expandedAnomalyRows.delete(anomalyId);
+        detailsRow.style.display = 'none';
+        if (mainRow) mainRow.classList.remove('expanded');
+        if (detailsBtn) detailsBtn.classList.remove('active');
+        return;
+    }
+
+    expandedAnomalyRows.add(anomalyId);
+    detailsRow.style.display = '';
+    if (mainRow) mainRow.classList.add('expanded');
+    if (detailsBtn) detailsBtn.classList.add('active');
+    renderAnomalyDetails(anomalyId);
+
+    const anomaly = anomalies.find((item) => item.id === anomalyId);
+    if (!anomaly) return;
+    await ensureAnomalyDetails(String(anomaly.match_id));
+    renderAnomalyDetails(anomalyId);
+}
+
+function renderAnomalyDetails(anomalyId) {
+    const container = document.querySelector(
+        `.anomaly-row-details[data-aid-details="${anomalyId}"] .anomaly-details`
+    );
+    if (!container) return;
+
+    const anomaly = anomalies.find((item) => item.id === anomalyId);
+    if (!anomaly) {
+        container.innerHTML = '<div class="anomaly-details-empty">Anomali bulunamadı</div>';
+        return;
+    }
+
+    const data = anomalyDetailsCache.get(String(anomaly.match_id));
+    if (!data) {
+        container.innerHTML = '<div class="anomaly-details-loading">Detaylar yükleniyor...</div>';
+        return;
+    }
+
+    container.innerHTML = buildMatchDetailsHtml(anomaly, data);
 }
 
 function renderFormBlock(match, form) {
     const home = form.home || {};
     const away = form.away || {};
     if (!home.form && !away.form) {
-        return '<div class="live-details-empty">Form verisi bulunamadı</div>';
+        return '<div class="anomaly-details-empty">Form verisi bulunamadı</div>';
     }
 
     const renderChips = (list) => {
@@ -1158,7 +985,7 @@ function renderExpectationBlock(match, votes, odds) {
     const hasVotes = votes && (votes.home_pct || votes.draw_pct || votes.away_pct);
 
     if (!hasOdds && !hasVotes) {
-        return '<div class="live-details-empty">Beklenti verisi bulunamadı</div>';
+        return '<div class="anomaly-details-empty">Beklenti verisi bulunamadı</div>';
     }
 
     const oddsHtml = hasOdds ? `
@@ -1211,518 +1038,41 @@ function formatNumber(value, decimals = null) {
     return num.toFixed(1);
 }
 
-function updateLiveBulk() {
-    const count = selectedLive.size;
-    setText('#selected-count-live', `${count} seçili`);
-    const betBtn = $('#btn-bulk-bet-live');
-    const ignBtn = $('#btn-bulk-ignore-live');
-    const folBtn = $('#btn-bulk-follow-live');
-    if (betBtn) betBtn.disabled = count === 0;
-    if (ignBtn) ignBtn.disabled = count === 0;
-    if (folBtn) folBtn.disabled = count === 0;
-}
-
-async function setLiveStatus(eventId, status) {
-    const match = liveMatches.find((m) => m.event_id === eventId);
-    if (!match) return;
-    const newStatus = match.status === status ? 'new' : status;
-
-    const result = await apiPost(API.liveMatchStatus(eventId), {
-        status: newStatus,
-        match: liveMatchSnapshot(match),
-    });
-    if (!result || !result.ok) return;
-
-    match.status = newStatus;
-    renderLiveMatches();
-    toast(`Durum güncellendi: ${statusLabel(newStatus)}`);
-}
-
-async function bulkLiveStatus(status) {
-    const eventIds = [...selectedLive];
-    if (!eventIds.length) return;
-
-    const matches = eventIds
-        .map((eid) => liveMatches.find((m) => m.event_id === eid))
-        .filter(Boolean)
-        .map(liveMatchSnapshot);
-    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status, matches });
-    if (!result || !result.ok) return;
-
-    eventIds.forEach((eid) => {
-        const match = liveMatches.find((m) => m.event_id === eid);
-        if (match) match.status = status;
-    });
-
-    renderLiveMatches();
-    toast(`${eventIds.length} maç güncellendi: ${statusLabel(status)}`);
-}
-
-const selectAllLive = $('#select-all-live');
-if (selectAllLive) {
-    selectAllLive.addEventListener('change', (event) => {
-        const checked = event.target.checked;
-        $$('.chk-live').forEach((checkbox) => {
-            checkbox.checked = checked;
-            const eid = checkbox.dataset.eid;
-            if (checked) selectedLive.add(eid);
-            else selectedLive.delete(eid);
-        });
-        updateLiveBulk();
-    });
-}
-
-const btnRefreshLive = $('#btn-refresh-live');
-if (btnRefreshLive) btnRefreshLive.addEventListener('click', loadLiveMatches);
-
-const filterLive = $('#filter-live-status');
-if (filterLive) filterLive.addEventListener('change', renderLiveMatches);
-
-const searchLive = $('#search-live');
-if (searchLive) searchLive.addEventListener('input', renderLiveMatches);
-
-const btnBulkBetLive = $('#btn-bulk-bet-live');
-if (btnBulkBetLive) btnBulkBetLive.addEventListener('click', () => bulkLiveStatus('bet_placed'));
-const btnBulkIgnoreLive = $('#btn-bulk-ignore-live');
-if (btnBulkIgnoreLive) btnBulkIgnoreLive.addEventListener('click', () => bulkLiveStatus('ignored'));
-const btnBulkFollowLive = $('#btn-bulk-follow-live');
-if (btnBulkFollowLive) btnBulkFollowLive.addEventListener('click', () => bulkLiveStatus('following'));
-
-/* ===== Live Matches 2 ===== */
-
-async function loadLiveMatches2() {
-    const list = $('#live2-list');
-    const button = $('#btn-fetch-live2');
-    const runId = live2StatsRun + 1;
-    live2StatsRun = runId;
-    if (list) {
-        list.innerHTML = '<div class="empty-msg">Canlı maçlar çekiliyor...</div>';
-    }
-    setButtonBusy(button, 'Çekiliyor...', 'Canlı Maçları Çek', true);
-
-    const data = await apiFetch(API.liveMatches2);
-    setButtonBusy(button, 'Çekiliyor...', 'Canlı Maçları Çek', false);
-
-    if (!data) {
-        liveMatches2 = [];
-        renderLive2Matches('Canlı maç listesi alınamadı. Tekrar deneyin.');
-        return;
-    }
-
-    liveMatches2 = (Array.isArray(data) ? data : []).map((item) => ({
-        ...item,
-        stats: null,
-        statsLoading: true,
-        statsError: '',
-    }));
-    renderLive2Matches();
-    touchLastUpdated();
-    if (liveMatches2.length) {
-        toast(`${liveMatches2.length} canlı maç listelendi, istatistikler çekiliyor`);
-        loadLive2StatsProgressively(runId);
-    }
-}
-
-function getVisibleLive2Matches() {
-    const filter = ($('#filter-live2-status') || {}).value || '';
-    const searchQuery = ($('#search-live2') || {}).value || '';
-    const drawFilter = getSegmentValue('filter-live2-draw');
-
-    let filtered = liveMatches2;
-    if (filter) filtered = filtered.filter((item) => (item.status || 'new') === filter);
-    filtered = applyDrawFilter(filtered, drawFilter);
-
-    filtered = filterBySearch(filtered, searchQuery, (item) =>
-        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
-    );
-
-    return filtered;
-}
-
-function renderLive2Matches(emptyText = 'Canlı maç bulunamadı') {
-    const list = $('#live2-list');
-    if (!list) return;
-    const selectAll = $('#select-all-live2');
-    selectedLive2.clear();
-    if (selectAll) selectAll.checked = false;
-    updateLive2Bulk();
-
-    const filtered = getVisibleLive2Matches();
-    setText('#live2-count', `${liveMatches2.length} maç`);
-
-    if (!filtered.length) {
-        list.innerHTML = `<div class="empty-msg">${escHtml(emptyText)}</div>`;
-        return;
-    }
-
-    list.innerHTML = filtered.map((item) => buildLive2CardHtml(item)).join('');
-    $$('.chk-live2').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const eid = checkbox.dataset.eid;
-            if (checkbox.checked) selectedLive2.add(eid);
-            else selectedLive2.delete(eid);
-            updateLive2Bulk();
-        });
-    });
-}
-
-function buildLive2CardHtml(item) {
-    const statusValue = item.status || 'new';
-    const stateClass = statusValue !== 'new' ? `state-${statusValue}` : '';
-    const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Canlı';
-
-    return `
-        <article class="live2-card ${stateClass}" data-eid="${escHtml(item.event_id)}">
-            <div class="live2-card-head">
-                <label class="live2-check">
-                    <input type="checkbox" class="chk-live2" data-eid="${escHtml(item.event_id)}">
-                </label>
-                <div class="live2-match">
-                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
-                        ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
-                    </a>
-                    <div class="live2-meta">${escHtml(item.league || '-')} • ${statusDesc} • Etkinlik ID: ${escHtml(item.event_id)}</div>
-                </div>
-                <div class="live2-scorebox">
-                    <span class="score-pill">${item.score_home} - ${item.score_away}</span>
-                    <span class="table-tag live-minute">${item.minute || 0}'</span>
-                    <span class="upcoming-status-label">${statusLabel(statusValue)}</span>
-                </div>
-                <div class="row-actions row-actions-icons live2-actions">
-                    <button class="icon-btn icon-btn-bet${statusValue === 'bet_placed' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
-                    <button class="icon-btn icon-btn-ignore${statusValue === 'ignored' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
-                    <button class="icon-btn icon-btn-follow${statusValue === 'following' ? ' active' : ''}" onclick="setLive2Status('${escAttr(item.event_id)}', 'following')" title="Takip et" aria-label="Takip et">${ICONS.follow}</button>
-                </div>
-            </div>
-            <div class="live2-text-data">
-                <span><strong>Durum:</strong> ${statusDesc}</span>
-                <span><strong>Skor:</strong> ${item.score_home} - ${item.score_away}</span>
-                <span><strong>Dakika:</strong> ${item.minute || 0}'</span>
-                <span><strong>Lig:</strong> ${escHtml(item.league || '-')}</span>
-            </div>
-            <div class="live2-stats-text" data-live2-stats="${escHtml(item.event_id)}">
-                ${renderLive2StatsText(item)}
-            </div>
-        </article>`;
-}
-
-function renderLive2StatsText(item) {
-    if (item.statsLoading) {
-        return '<div class="live-details-loading">İstatistikler çekiliyor...</div>';
-    }
-    if (item.statsError) {
-        return `<div class="live-details-empty">${escHtml(item.statsError)}</div>`;
-    }
-    const stats = item.stats || {};
-    if (!hasLive2Stats(stats)) {
-        return '<div class="live-details-empty">Bu maç için istatistik verisi henüz yok</div>';
-    }
-
-    const home = item.home_team || 'Ev';
-    const away = item.away_team || 'Dep';
-    const lines = [];
-
-    addLive2Line(lines, 'Topa sahip olma', stats.possession_home, stats.possession_away, '%');
-    addLive2Line(lines, 'Toplam şut', stats.total_shots_home, stats.total_shots_away);
-    addLive2Line(lines, 'Kaleyi bulan şut', stats.shots_on_target_home, stats.shots_on_target_away);
-    addLive2Line(lines, 'Kaleyi bulmayan şut', stats.shots_off_target_home, stats.shots_off_target_away);
-    addLive2Line(lines, 'Bloklanan şut', stats.blocked_shots_home, stats.blocked_shots_away);
-    addLive2Line(lines, 'Tehlikeli atak', stats.dangerous_attacks_home, stats.dangerous_attacks_away);
-    addLive2Line(lines, 'Beklenen gol (xG)', stats.expected_goals_home, stats.expected_goals_away, '', 2);
-    addLive2Line(lines, 'Büyük şans', stats.big_chances_home, stats.big_chances_away);
-    addLive2Line(lines, 'Korner', stats.corner_kicks_home, stats.corner_kicks_away);
-    addLive2Line(lines, 'Ofsayt', stats.offsides_home, stats.offsides_away);
-    addLive2Line(lines, 'Faul', stats.fouls_home, stats.fouls_away);
-    addLive2Line(lines, 'Sarı kart', stats.yellow_cards_home, stats.yellow_cards_away);
-    addLive2Line(lines, 'Kırmızı kart', stats.red_cards_home, stats.red_cards_away);
-
-    const passHome = statPercent(stats.pass_accuracy_home, passAccuracy(stats.accurate_passes_home, stats.total_passes_home));
-    const passAway = statPercent(stats.pass_accuracy_away, passAccuracy(stats.accurate_passes_away, stats.total_passes_away));
-    addLive2Line(lines, 'Pas isabeti', passHome, passAway, '%');
-
-    return `
-        <div class="live2-analyst-text">
-            <strong>Analist özeti:</strong> ${escHtml(buildLive2AnalystNote(item, stats))}
-        </div>
-        <div class="live2-stat-lines">
-            ${lines.map((line) => `<div>${escHtml(line)}</div>`).join('')}
-        </div>
-        <div class="live2-stat-footnote">Karşılaştırma sırası: ${escHtml(home)} - ${escHtml(away)}</div>`;
-}
-
-function hasLive2Stats(stats) {
-    return [
-        stats.possession_home, stats.possession_away,
-        stats.total_shots_home, stats.total_shots_away,
-        stats.shots_on_target_home, stats.shots_on_target_away,
-        stats.shots_off_target_home, stats.shots_off_target_away,
-        stats.blocked_shots_home, stats.blocked_shots_away,
-        stats.dangerous_attacks_home, stats.dangerous_attacks_away,
-        stats.expected_goals_home, stats.expected_goals_away,
-        stats.big_chances_home, stats.big_chances_away,
-        stats.corner_kicks_home, stats.corner_kicks_away,
-    ].some((value) => Number(value) > 0);
-}
-
-function addLive2Line(lines, label, homeValue, awayValue, unit = '', decimals = null) {
-    const home = Number(homeValue) || 0;
-    const away = Number(awayValue) || 0;
-    if (home <= 0 && away <= 0) return;
-    lines.push(`${label}: ${formatNumber(home, decimals)}${unit} - ${formatNumber(away, decimals)}${unit}`);
-}
-
-function buildLive2AnalystNote(item, stats) {
-    const home = item.home_team || 'Ev sahibi';
-    const away = item.away_team || 'Deplasman';
-    const homePressure = (
-        (Number(stats.shots_on_target_home) || 0) * 3
-        + (Number(stats.total_shots_home) || 0)
-        + (Number(stats.dangerous_attacks_home) || 0) / 4
-        + (Number(stats.expected_goals_home) || 0) * 4
-        + (Number(stats.big_chances_home) || 0) * 2
-    );
-    const awayPressure = (
-        (Number(stats.shots_on_target_away) || 0) * 3
-        + (Number(stats.total_shots_away) || 0)
-        + (Number(stats.dangerous_attacks_away) || 0) / 4
-        + (Number(stats.expected_goals_away) || 0) * 4
-        + (Number(stats.big_chances_away) || 0) * 2
-    );
-    const diff = Math.abs(homePressure - awayPressure);
-    if (diff < 4) {
-        return 'Baskı dengeli görünüyor; tek bir şut metriğine göre hüküm vermemek gerekir.';
-    }
-    const leader = homePressure > awayPressure ? home : away;
-    const follower = homePressure > awayPressure ? away : home;
-    if (diff >= 14) {
-        return `${leader} belirgin baskı kuruyor; ${follower} savunmada daha fazla reaksiyon vermek zorunda kalmış.`;
-    }
-    return `${leader} tarafında hafif/orta seviye üstünlük var; isabetli şut ve tehlikeli atak trendi takip edilmeli.`;
-}
-
-function updateLive2StatsBlock(eventId) {
-    const item = liveMatches2.find((match) => match.event_id === eventId);
-    if (!item) return;
-    const block = document.querySelector(`.live2-card[data-eid="${CSS.escape(eventId)}"] .live2-stats-text`);
-    if (block) block.innerHTML = renderLive2StatsText(item);
-}
-
-async function loadLive2StatsProgressively(runId) {
-    let nextIndex = 0;
-    const worker = async () => {
-        while (runId === live2StatsRun && nextIndex < liveMatches2.length) {
-            const item = liveMatches2[nextIndex];
-            nextIndex += 1;
-            if (!item) continue;
-            let data = await apiFetchQuiet(API.liveMatch2Stats(item.event_id));
-            if (!data) {
-                const fallback = await apiFetchQuiet(API.liveMatchDetails(item.event_id));
-                data = fallback ? { stats: fallback.stats || null, error: '' } : null;
-            }
-            if (runId !== live2StatsRun) return;
-            item.stats = data && data.stats ? data.stats : null;
-            item.statsError = data ? (data.error || '') : 'İstatistik servisine ulaşılamadı';
-            item.statsLoading = false;
-            updateLive2StatsBlock(item.event_id);
-        }
-    };
-
-    const workers = Array.from(
-        { length: Math.min(LIVE2_STATS_CONCURRENCY, liveMatches2.length) },
-        worker
-    );
-    await Promise.all(workers);
-    if (runId === live2StatsRun && liveMatches2.length) {
-        toast('Canlı Maçlar-2 istatistikleri güncellendi');
-    }
-}
-
-function updateLive2Bulk() {
-    const count = selectedLive2.size;
-    setText('#selected-count-live2', `${count} seçili`);
-    const betBtn = $('#btn-bulk-bet-live2');
-    const ignBtn = $('#btn-bulk-ignore-live2');
-    const folBtn = $('#btn-bulk-follow-live2');
-    if (betBtn) betBtn.disabled = count === 0;
-    if (ignBtn) ignBtn.disabled = count === 0;
-    if (folBtn) folBtn.disabled = count === 0;
-}
-
-async function setLive2Status(eventId, status) {
-    const match = liveMatches2.find((m) => m.event_id === eventId);
-    if (!match) return;
-    const newStatus = match.status === status ? 'new' : status;
-
-    const result = await apiPost(API.liveMatchStatus(eventId), {
-        status: newStatus,
-        match: liveMatchSnapshot(match),
-    });
-    if (!result || !result.ok) return;
-
-    match.status = newStatus;
-    renderLive2Matches();
-    toast(`Durum güncellendi: ${statusLabel(newStatus)}`);
-}
-
-async function bulkLive2Status(status) {
-    const eventIds = [...selectedLive2];
-    if (!eventIds.length) return;
-
-    const matches = eventIds
-        .map((eid) => liveMatches2.find((m) => m.event_id === eid))
-        .filter(Boolean)
-        .map(liveMatchSnapshot);
-    const result = await apiPost(API.liveMatchBulkStatus, { event_ids: eventIds, status, matches });
-    if (!result || !result.ok) return;
-
-    eventIds.forEach((eid) => {
-        const match = liveMatches2.find((m) => m.event_id === eid);
-        if (match) match.status = status;
-    });
-
-    renderLive2Matches();
-    toast(`${eventIds.length} maç güncellendi: ${statusLabel(status)}`);
-}
-
-const btnFetchLive2 = $('#btn-fetch-live2');
-if (btnFetchLive2) btnFetchLive2.addEventListener('click', loadLiveMatches2);
-
-const filterLive2 = $('#filter-live2-status');
-if (filterLive2) filterLive2.addEventListener('change', renderLive2Matches);
-bindSegmentedFilter('filter-live2-draw', renderLive2Matches);
-
-const searchLive2 = $('#search-live2');
-if (searchLive2) searchLive2.addEventListener('input', renderLive2Matches);
-
-const selectAllLive2 = $('#select-all-live2');
-if (selectAllLive2) {
-    selectAllLive2.addEventListener('change', (event) => {
-        const checked = event.target.checked;
-        $$('.chk-live2').forEach((checkbox) => {
-            checkbox.checked = checked;
-            const eid = checkbox.dataset.eid;
-            if (checked) selectedLive2.add(eid);
-            else selectedLive2.delete(eid);
-        });
-        updateLive2Bulk();
-    });
-}
-
-const btnBulkBetLive2 = $('#btn-bulk-bet-live2');
-if (btnBulkBetLive2) btnBulkBetLive2.addEventListener('click', () => bulkLive2Status('bet_placed'));
-const btnBulkIgnoreLive2 = $('#btn-bulk-ignore-live2');
-if (btnBulkIgnoreLive2) btnBulkIgnoreLive2.addEventListener('click', () => bulkLive2Status('ignored'));
-const btnBulkFollowLive2 = $('#btn-bulk-follow-live2');
-if (btnBulkFollowLive2) btnBulkFollowLive2.addEventListener('click', () => bulkLive2Status('following'));
-
-/* ===== Live Detections ===== */
-
-async function loadLiveDetections() {
-    const list = $('#detections-list');
-    if (list) {
-        list.innerHTML = '<div class="empty-msg">Takip edilen maçlar yükleniyor...</div>';
-    }
-    const data = await apiFetch(API.liveDetections);
-    if (!data) {
-        liveDetections = [];
-        renderLiveDetections('Canlı tespit listesi alınamadı');
-        return;
-    }
-    liveDetections = Array.isArray(data) ? data : [];
-    renderLiveDetections();
-    touchLastUpdated();
-}
-
-function getVisibleLiveDetections() {
-    const searchQuery = ($('#search-detections') || {}).value || '';
-    const drawFilter = getSegmentValue('filter-detections-draw');
-    return filterBySearch(applyDrawFilter(liveDetections, drawFilter), searchQuery, (item) =>
-        `${item.home_team} ${item.away_team} ${item.league} ${item.score_home}-${item.score_away} ${item.status_desc || ''}`
-    );
-}
-
-function renderLiveDetections(emptyText = 'Takipte maç bulunmuyor') {
-    const list = $('#detections-list');
-    if (!list) return;
-    const filtered = getVisibleLiveDetections();
-    setText('#detections-count', `${liveDetections.length} maç`);
-
-    if (!filtered.length) {
-        list.innerHTML = `<div class="empty-msg">${escHtml(emptyText)}</div>`;
-        return;
-    }
-
-    list.innerHTML = filtered.map((item) => buildLiveDetectionCardHtml(item)).join('');
-}
-
-function buildLiveDetectionCardHtml(item) {
-    const statusDesc = item.status_desc ? escHtml(item.status_desc) : 'Takipte';
-    const activeNow = liveMatches2.some((m) => m.event_id === item.event_id)
-        || liveMatches.some((m) => m.event_id === item.event_id);
-    const marker = activeNow ? 'Aktif canlı listede' : 'Takip kayıtlı';
-
-    return `
-        <article class="live2-card live-detection-card state-following" data-eid="${escHtml(item.event_id)}">
-            <div class="live2-card-head">
-                <div class="live2-match">
-                    <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
-                        ${escHtml(item.home_team || 'Bilinmeyen')} vs ${escHtml(item.away_team || 'Bilinmeyen')}
-                    </a>
-                    <div class="live2-meta">${escHtml(item.league || '-')} • ${statusDesc} • Etkinlik ID: ${escHtml(item.event_id)}</div>
-                </div>
-                <div class="live2-scorebox">
-                    <span class="score-pill">${Number(item.score_home) || 0} - ${Number(item.score_away) || 0}</span>
-                    <span class="table-tag live-minute">${Number(item.minute) || 0}'</span>
-                    <span class="upcoming-status-label">${marker}</span>
-                </div>
-                <div class="row-actions row-actions-icons live2-actions">
-                    <button class="icon-btn icon-btn-bet" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'bet_placed')" title="Bahis oynandı" aria-label="Bahis oynandı">${ICONS.bet}</button>
-                    <button class="icon-btn icon-btn-ignore" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'ignored')" title="Gözardı et" aria-label="Gözardı et">${ICONS.ignore}</button>
-                    <button class="icon-btn icon-btn-restore" onclick="setLiveDetectionStatus('${escAttr(item.event_id)}', 'new')" title="Takipten çıkar" aria-label="Takipten çıkar">${ICONS.restore}</button>
-                </div>
-            </div>
-            <div class="live2-text-data">
-                <span><strong>Durum:</strong> ${statusDesc}</span>
-                <span><strong>Skor:</strong> ${Number(item.score_home) || 0} - ${Number(item.score_away) || 0}</span>
-                <span><strong>Dakika:</strong> ${Number(item.minute) || 0}'</span>
-                <span><strong>Son güncelleme:</strong> ${formatCreatedAt(item.updated_at)}</span>
-            </div>
-        </article>`;
-}
-
-async function setLiveDetectionStatus(eventId, status) {
-    const match = liveDetections.find((m) => m.event_id === eventId);
-    if (!match) return;
-    const result = await apiPost(API.liveMatchStatus(eventId), {
-        status,
-        match: liveMatchSnapshot(match),
-    });
-    if (!result || !result.ok) return;
-    toast(`Durum güncellendi: ${statusLabel(status)}`);
-    await loadLiveDetections();
-}
-
-const btnRefreshDetections = $('#btn-refresh-detections');
-if (btnRefreshDetections) btnRefreshDetections.addEventListener('click', loadLiveDetections);
-bindSegmentedFilter('filter-detections-draw', renderLiveDetections);
-
-const searchDetections = $('#search-detections');
-if (searchDetections) searchDetections.addEventListener('input', renderLiveDetections);
-
-// Hook sortable headers for live-table (initSortableHeaders runs once and
-// only dispatches to anomaly/upcoming; extend its dispatcher):
-function refreshVisibleLiveMatches() {
-    const activeTab = document.querySelector('.tab.active');
-    if (activeTab && activeTab.dataset.tab === 'live') renderLiveMatches();
-}
-
 async function loadDeletedAnomalies() {
-    const data = await apiFetch(API.deletedAnomalies);
+    const resultFilter = ($('#filter-deleted-result') || {}).value || '';
+    const data = await apiFetch(API.deletedAnomalies(resultFilter));
     if (!data) return;
 
-    deletedAnomalies = data;
+    // Accept the old array response during rolling deployments.
+    deletedAnomalies = Array.isArray(data) ? data : (data.items || []);
+    if (!Array.isArray(data)) deletedSummary = data.summary || deletedSummary;
+    renderDeletedSummary();
     renderDeletedAnomalies();
     touchLastUpdated();
+}
+
+function renderDeletedSummary() {
+    setText('#deleted-summary-total', String(deletedSummary.total || 0));
+    setText('#deleted-summary-evaluated', String(deletedSummary.evaluated || 0));
+    setText('#deleted-summary-successful', String(deletedSummary.successful || 0));
+    setText('#deleted-summary-failed', String(deletedSummary.failed || 0));
+    setText('#deleted-summary-pending', String(deletedSummary.pending || 0));
+    setText('#deleted-summary-unresolved', String(deletedSummary.unresolved || 0));
+    const rate = Number(deletedSummary.success_rate || 0).toLocaleString('tr-TR', {
+        maximumFractionDigits: 1,
+    });
+    setText('#deleted-summary-rate', `%${rate}`);
+    setText('#deleted-summary-matches', String(deletedSummary.finished_matches || 0));
+}
+
+function deletedResultLabel(status) {
+    const labels = {
+        successful: 'Başarılı',
+        failed: 'Başarısız',
+        pending: 'Sonuç bekliyor',
+        unresolved: 'Değerlendirilemedi',
+    };
+    return labels[status] || 'Sonuç bekliyor';
 }
 
 function renderDeletedAnomalies() {
@@ -1738,7 +1088,7 @@ function renderDeletedAnomalies() {
     );
 
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">Silinen kayıt yok</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="empty-msg">Bu filtrede kayıt yok</td></tr>';
         return;
     }
 
@@ -1746,7 +1096,20 @@ function renderDeletedAnomalies() {
         const conditionBadge = item.condition_type === 'A'
             ? '<span class="badge badge-a">A / Beraberlik</span>'
             : '<span class="badge badge-b">B / 1 Fark</span>';
-        const deletedTime = formatCreatedAt(item.deleted_at, true);
+        const completedTime = item.finished_at
+            ? formatTurkeyTimestamp(item.finished_at, true)
+            : formatCreatedAt(item.deleted_at, true);
+        const finalScore = item.final_score_home == null || item.final_score_away == null
+            ? '-'
+            : `${item.final_score_home} - ${item.final_score_away}`;
+        const dominantTeam = item.dominant_side === 'home'
+            ? item.home_team
+            : (item.dominant_side === 'away' ? item.away_team : 'Belirlenemedi');
+        const resultStatus = item.result_status || 'pending';
+        const resultBadge = `<span class="result-badge result-${resultStatus}">${deletedResultLabel(resultStatus)}</span>`;
+        const restoreButton = resultStatus === 'pending'
+            ? `<button class="icon-btn icon-btn-restore" onclick="restoreDeletedRow(${item.id})" title="Geri yükle" aria-label="Geri yükle">${ICONS.restore}</button>`
+            : '';
 
         return `
         <tr data-id="${item.id}">
@@ -1759,14 +1122,21 @@ function renderDeletedAnomalies() {
                     <span class="cell-subtle">Maç ID: ${escHtml(item.match_id)}</span>
                 </div>
             </td>
-            <td><span class="score-pill">${item.score_home} - ${item.score_away}</span></td>
-            <td><span class="table-tag">${item.minute}'</span></td>
+            <td>
+                <div class="cell-stack">
+                    <span class="score-pill">${item.score_home} - ${item.score_away}</span>
+                    <span class="cell-subtle">${item.minute}'. dakika</span>
+                </div>
+            </td>
+            <td><span class="score-pill score-pill-final">${finalScore}</span></td>
+            <td><span class="dominant-team">${escHtml(dominantTeam)}</span></td>
+            <td>${resultBadge}</td>
             <td>${escHtml(item.league || '-')}</td>
             <td>${conditionBadge}</td>
-            <td><span class="time-pill">${deletedTime}</span></td>
+            <td><span class="time-pill">${completedTime}</span></td>
             <td>
                 <div class="row-actions row-actions-icons">
-                    <button class="icon-btn icon-btn-restore" onclick="restoreDeletedRow(${item.id})" title="Geri yükle" aria-label="Geri yükle">${ICONS.restore}</button>
+                    ${restoreButton}
                     <button class="icon-btn icon-btn-purge" onclick="purgeDeletedRow(${item.id})" title="Kalıcı sil" aria-label="Kalıcı sil">${ICONS.purge}</button>
                 </div>
             </td>
@@ -1785,15 +1155,19 @@ function renderDeletedAnomalies() {
 
 function updateDeletedBulk() {
     const count = selectedDeleted.size;
+    const restorableCount = [...selectedDeleted].filter((id) => {
+        const item = deletedAnomalies.find((row) => row.id === id);
+        return item && (item.result_status || 'pending') === 'pending';
+    }).length;
     $('#selected-count-deleted').textContent = `${count} seçili`;
-    $('#btn-bulk-restore-deleted').disabled = count === 0;
+    $('#btn-bulk-restore-deleted').disabled = restorableCount === 0;
     $('#btn-bulk-purge-deleted').disabled = count === 0;
 }
 
 async function restoreDeletedRow(id) {
     const result = await apiPost(API.restoreAnomalies, { ids: [id] });
     if (!result || !result.ok) return;
-    toast('Kayıt geri yüklendi');
+    toast(result.restored ? 'Kayıt geri yüklendi' : 'Tamamlanmış maçlar geri yüklenemez');
     await Promise.all([loadDeletedAnomalies(), loadAnomalies()]);
 }
 
@@ -1817,13 +1191,41 @@ $('#select-all-deleted').addEventListener('change', (event) => {
 });
 
 $('#btn-refresh-deleted').addEventListener('click', loadDeletedAnomalies);
+$('#filter-deleted-result').addEventListener('change', loadDeletedAnomalies);
 $('#search-deleted').addEventListener('input', renderDeletedAnomalies);
 
+async function triggerFinishedCheck() {
+    const buttons = [
+        { element: $('#btn-trigger-finished-main'), label: 'Bitenleri Kontrol Et' },
+        { element: $('#btn-trigger-finished'), label: 'Sonuçları Kontrol Et' },
+    ];
+    buttons.forEach(({ element, label }) => {
+        setButtonBusy(element, 'Kontrol ediliyor...', label, true);
+    });
+    try {
+        const result = await apiPost(API.triggerFinished, {});
+        if (result && result.ok) {
+            await Promise.all([loadDeletedAnomalies(), loadAnomalies()]);
+            toast(`${result.checked} maç kontrol edildi, ${result.archived} sinyal arşivlendi`);
+        }
+    } finally {
+        buttons.forEach(({ element, label }) => {
+            setButtonBusy(element, 'Kontrol ediliyor...', label, false);
+        });
+    }
+}
+
+$('#btn-trigger-finished-main').addEventListener('click', triggerFinishedCheck);
+$('#btn-trigger-finished').addEventListener('click', triggerFinishedCheck);
+
 $('#btn-bulk-restore-deleted').addEventListener('click', async () => {
-    const ids = [...selectedDeleted];
+    const ids = [...selectedDeleted].filter((id) => {
+        const item = deletedAnomalies.find((row) => row.id === id);
+        return item && (item.result_status || 'pending') === 'pending';
+    });
     const result = await apiPost(API.restoreAnomalies, { ids });
     if (!result || !result.ok) return;
-    toast(`${ids.length} kayıt geri yüklendi`);
+    toast(`${result.restored || 0} kayıt geri yüklendi`);
     await Promise.all([loadDeletedAnomalies(), loadAnomalies()]);
 });
 
@@ -1863,17 +1265,16 @@ $('#btn-clear-database').addEventListener('click', async () => {
         anomalies = [];
         analyses = [];
         upcomingMatches = [];
-        liveMatches = [];
-        liveMatches2 = [];
-        liveDetections = [];
         deletedAnomalies = [];
+        deletedSummary = {
+            total: 0, successful: 0, failed: 0, pending: 0, unresolved: 0,
+            evaluated: 0, finished_matches: 0, success_rate: 0,
+        };
         renderAnomalies();
         renderAnalyses();
         renderUpcoming();
-        renderLiveMatches();
-        renderLive2Matches();
-        renderLiveDetections();
         renderDeletedAnomalies();
+        renderDeletedSummary();
         updateOverview();
         touchLastUpdated();
         toast('Veritabanı temizlendi');

@@ -1,6 +1,6 @@
 """
 Background workers:
-  1. Live match scanner — runs every SCAN_INTERVAL_SECONDS
+  1. Anomaly scanner — runs every SCAN_INTERVAL_SECONDS
   2. Upcoming match analyzer — runs twice daily at 07:00 and 19:00 Turkey time
 """
 
@@ -19,22 +19,24 @@ from notifier import (
 from db import (
     insert_anomaly, mark_notified, insert_analysis,
     upsert_upcoming_matches, mark_upcoming_anomaly,
+    get_pending_anomaly_match_ids, finalize_match_anomalies,
 )
 
 logger = logging.getLogger(__name__)
 
 _scan_lock = asyncio.Lock()
 _upcoming_lock = asyncio.Lock()
+_finished_match_lock = asyncio.Lock()
 
 
-async def live_scan():
-    """Worker 1: Scan live matches for anomalies."""
+async def anomaly_scan():
+    """Worker 1: Scan current matches for anomalies."""
     if _scan_lock.locked():
         logger.debug("Live scan already running, skipping")
         return
 
     async with _scan_lock:
-        logger.info("Starting live match scan...")
+        logger.info("Starting anomaly scan...")
         try:
             matches = await scraper.get_live_matches()
             logger.info(f"Found {len(matches)} live matches")
@@ -131,21 +133,86 @@ async def live_scan():
             logger.error(f"Live scan error: {e}", exc_info=True)
 
 
-async def upcoming_scan(run_type: str = "morning"):
-    """Worker 2: Fetch upcoming matches and get Gemini analysis."""
+async def finished_match_scan() -> dict:
+    """Check pending signal matches, grade finished ones, and archive them."""
+    if _finished_match_lock.locked():
+        logger.debug("Finished-match scan already running, skipping")
+        return {"ok": False, "busy": True, "checked": 0, "archived": 0}
+
+    async with _finished_match_lock:
+        try:
+            event_ids = await get_pending_anomaly_match_ids()
+            if not event_ids:
+                logger.debug("No pending anomaly matches to finalize")
+                return {"ok": True, "checked": 0, "matches_finished": 0, "archived": 0}
+
+            logger.info("Checking %s anomaly matches for final results", len(event_ids))
+            results = await asyncio.gather(
+                *(scraper.get_match_result(event_id) for event_id in event_ids),
+                return_exceptions=True,
+            )
+
+            archived = 0
+            matches_finished = 0
+            errors = 0
+            for event_id, result in zip(event_ids, results):
+                if isinstance(result, Exception):
+                    errors += 1
+                    logger.warning(
+                        "Result check failed for event %s: %s", event_id, result
+                    )
+                    continue
+                if (
+                    result is None
+                    or not result.is_finished
+                    or result.score_home is None
+                    or result.score_away is None
+                ):
+                    continue
+                matches_finished += 1
+                archived += await finalize_match_anomalies(
+                    event_id, result.score_home, result.score_away
+                )
+
+            logger.info(
+                "Finished-match scan complete: checked=%s finished=%s archived_signals=%s errors=%s",
+                len(event_ids), matches_finished, archived, errors,
+            )
+            return {
+                "ok": True,
+                "checked": len(event_ids),
+                "matches_finished": matches_finished,
+                "archived": archived,
+                "errors": errors,
+            }
+        except Exception as exc:
+            logger.error("Finished-match scan error: %s", exc, exc_info=True)
+            return {"ok": False, "error": str(exc), "checked": 0, "archived": 0}
+
+
+async def upcoming_scan(run_type: str = "morning", analyze: bool = True) -> dict:
+    """Fetch and store upcoming matches, optionally running the daily analysis."""
     if _upcoming_lock.locked():
         logger.debug("Upcoming scan already running, skipping")
-        return
+        return {"ok": False, "busy": True, "error": "Upcoming scan already running"}
 
     async with _upcoming_lock:
-        logger.info(f"Starting upcoming match analysis ({run_type})...")
+        action = "analysis" if analyze else "refresh"
+        logger.info(f"Starting upcoming match {action} ({run_type})...")
         try:
             matches = await scraper.get_upcoming_matches()
             logger.info(f"Found {len(matches)} upcoming matches")
 
             if not matches:
-                await send_telegram("📋 Bugün için yaklaşan maç bulunamadı.")
-                return
+                if analyze:
+                    await send_telegram("📋 Bugün için yaklaşan maç bulunamadı.")
+                fetch_error = scraper.last_fetch_error or {}
+                return {
+                    "ok": not bool(fetch_error),
+                    "count": 0,
+                    "saved": 0,
+                    "error": fetch_error.get("message"),
+                }
 
             # ── 0. Save matches to DB ──
             scan_date = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
@@ -162,6 +229,10 @@ async def upcoming_scan(run_type: str = "morning"):
             ]
             inserted = await upsert_upcoming_matches(match_dicts, scan_date)
             logger.info(f"Saved {inserted} new upcoming matches to DB")
+
+            result = {"ok": True, "count": len(matches), "saved": inserted}
+            if not analyze:
+                return result
 
             # ── 1. Send formatted match list to Telegram ──
             match_list_msg = _format_match_list(matches, run_type)
@@ -190,7 +261,7 @@ async def upcoming_scan(run_type: str = "morning"):
                     "⚠️ Yaklaşan maçlar için Gemini analizi alınamadı.",
                     reply_to_message_id=list_msg_id,
                 )
-                return
+                return {**result, "analyzed": False}
 
             # Save to database
             await insert_analysis(
@@ -211,9 +282,11 @@ async def upcoming_scan(run_type: str = "morning"):
                 reply_to_message_id=list_msg_id,
             )
             logger.info("Upcoming analysis sent successfully")
+            return {**result, "analyzed": True}
 
         except Exception as e:
             logger.error(f"Upcoming scan error: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
 
 
 def _fmt_time_utc3(ts_str: str) -> str:

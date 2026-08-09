@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 import aiosqlite
 from config import DATABASE_PATH, TZ_TURKEY
+from signal_evaluator import infer_dominant_side, evaluate_signal_result
 
 _db: aiosqlite.Connection | None = None
 
@@ -71,20 +72,6 @@ async def init_db():
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_upcoming_event
             ON upcoming_matches(event_id, scan_date);
-
-        CREATE TABLE IF NOT EXISTS live_match_actions (
-            event_id TEXT PRIMARY KEY,
-            home_team TEXT DEFAULT '',
-            away_team TEXT DEFAULT '',
-            score_home INTEGER DEFAULT 0,
-            score_away INTEGER DEFAULT 0,
-            minute INTEGER DEFAULT 0,
-            league TEXT DEFAULT '',
-            status_desc TEXT DEFAULT '',
-            status TEXT DEFAULT 'new',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
     """)
     await db.commit()
 
@@ -121,25 +108,57 @@ async def init_db():
         await db.commit()
     except Exception:
         pass
-    # Migration: persist enough live-match metadata for the Canlı Tespit view.
-    for column_sql in (
-        "ALTER TABLE live_match_actions ADD COLUMN home_team TEXT DEFAULT ''",
-        "ALTER TABLE live_match_actions ADD COLUMN away_team TEXT DEFAULT ''",
-        "ALTER TABLE live_match_actions ADD COLUMN score_home INTEGER DEFAULT 0",
-        "ALTER TABLE live_match_actions ADD COLUMN score_away INTEGER DEFAULT 0",
-        "ALTER TABLE live_match_actions ADD COLUMN minute INTEGER DEFAULT 0",
-        "ALTER TABLE live_match_actions ADD COLUMN league TEXT DEFAULT ''",
-        "ALTER TABLE live_match_actions ADD COLUMN status_desc TEXT DEFAULT ''",
-        "ALTER TABLE live_match_actions ADD COLUMN created_at TEXT DEFAULT ''",
-    ):
+    # Migration: immutable signal prediction and completed-match grading.
+    result_columns = (
+        "ALTER TABLE anomalies ADD COLUMN dominant_side TEXT DEFAULT 'unknown'",
+        "ALTER TABLE anomalies ADD COLUMN final_score_home INTEGER DEFAULT NULL",
+        "ALTER TABLE anomalies ADD COLUMN final_score_away INTEGER DEFAULT NULL",
+        "ALTER TABLE anomalies ADD COLUMN result_status TEXT DEFAULT 'pending'",
+        "ALTER TABLE anomalies ADD COLUMN finished_at TEXT DEFAULT NULL",
+        "ALTER TABLE anomalies ADD COLUMN deletion_reason TEXT DEFAULT NULL",
+    )
+    for column_sql in result_columns:
         try:
             await db.execute(column_sql)
-            await db.commit()
         except Exception:
-            pass  # column already exists
+            pass
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_anomalies_result_status "
+        "ON anomalies(result_status, deleted_at)"
+    )
+    await db.commit()
+    await _backfill_dominant_sides(db)
+    # Removed live-list/live-detection feature: discard its obsolete state.
+    await db.execute("DROP TABLE IF EXISTS live_match_actions")
+    await db.commit()
 
 
 # ---- Anomaly CRUD ----
+
+
+async def _backfill_dominant_sides(db: aiosqlite.Connection):
+    """Populate prediction sides for records created before this feature."""
+    cursor = await db.execute(
+        "SELECT id, condition_type, score_home, score_away, stats_snapshot "
+        "FROM anomalies WHERE COALESCE(dominant_side, 'unknown') = 'unknown'"
+    )
+    rows = await cursor.fetchall()
+    updates = []
+    for row in rows:
+        try:
+            stats = json.loads(row["stats_snapshot"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            stats = {}
+        side = infer_dominant_side(
+            row["condition_type"], row["score_home"], row["score_away"], stats
+        )
+        if side != "unknown":
+            updates.append((side, row["id"]))
+    if updates:
+        await db.executemany(
+            "UPDATE anomalies SET dominant_side = ? WHERE id = ?", updates
+        )
+        await db.commit()
 
 async def insert_anomaly(
     match_id: str, home_team: str, away_team: str,
@@ -150,6 +169,9 @@ async def insert_anomaly(
     """Insert or update anomaly. Returns (row_id, is_new, alert_number)."""
     db = await get_db()
     try:
+        dominant_side = infer_dominant_side(
+            condition_type, score_home, score_away, stats_snapshot
+        )
         # Check if this exact match+condition+score already exists
         cursor = await db.execute(
             "SELECT id, alert_number FROM anomalies "
@@ -184,13 +206,13 @@ async def insert_anomaly(
             """INSERT INTO anomalies
                (match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type, triggered_rules, stats_snapshot,
-                alert_number, detected_at_tr)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                alert_number, detected_at_tr, dominant_side)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type,
                 json.dumps(triggered_rules), json.dumps(stats_snapshot),
-                alert_number, turkey_now_str(),
+                alert_number, turkey_now_str(), dominant_side,
             ),
         )
         await db.commit()
@@ -217,15 +239,103 @@ async def get_anomalies(status_filter: str | None = None, limit: int = 200):
     return [dict(r) for r in rows]
 
 
-async def get_deleted_anomalies(limit: int = 500):
+async def get_deleted_anomalies(
+    result_filter: str | None = None, limit: int = 500
+):
     db = await get_db()
-    cursor = await db.execute(
-        "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
-        "ORDER BY deleted_at DESC LIMIT ?",
-        (limit,),
-    )
+    if result_filter:
+        cursor = await db.execute(
+            "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
+            "AND result_status = ? ORDER BY deleted_at DESC LIMIT ?",
+            (result_filter, limit),
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC LIMIT ?",
+            (limit,),
+        )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
+
+
+async def get_deleted_anomaly_summary() -> dict:
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT
+               COUNT(*) AS total,
+               SUM(CASE WHEN result_status = 'successful' THEN 1 ELSE 0 END) AS successful,
+               SUM(CASE WHEN result_status = 'failed' THEN 1 ELSE 0 END) AS failed,
+               SUM(CASE WHEN result_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+               SUM(CASE WHEN result_status = 'unresolved' THEN 1 ELSE 0 END) AS unresolved,
+               COUNT(DISTINCT CASE WHEN final_score_home IS NOT NULL
+                                   AND final_score_away IS NOT NULL
+                                   THEN match_id END) AS finished_matches
+           FROM anomalies WHERE deleted_at IS NOT NULL"""
+    )
+    row = dict(await cursor.fetchone())
+    successful = int(row.get("successful") or 0)
+    failed = int(row.get("failed") or 0)
+    evaluated = successful + failed
+    return {
+        "total": int(row.get("total") or 0),
+        "successful": successful,
+        "failed": failed,
+        "pending": int(row.get("pending") or 0),
+        "unresolved": int(row.get("unresolved") or 0),
+        "evaluated": evaluated,
+        "finished_matches": int(row.get("finished_matches") or 0),
+        "success_rate": round(successful * 100 / evaluated, 1) if evaluated else 0.0,
+    }
+
+
+async def get_pending_anomaly_match_ids() -> list[str]:
+    """Return matches that still need a final-result check, including trash."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT DISTINCT match_id FROM anomalies "
+        "WHERE COALESCE(result_status, 'pending') = 'pending' "
+        "AND final_score_home IS NULL AND final_score_away IS NULL"
+    )
+    return [str(row["match_id"]) for row in await cursor.fetchall()]
+
+
+async def finalize_match_anomalies(
+    match_id: str, final_score_home: int, final_score_away: int
+) -> int:
+    """Grade every pending signal for a finished match and archive active rows."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id, dominant_side FROM anomalies "
+        "WHERE match_id = ? AND COALESCE(result_status, 'pending') = 'pending'",
+        (match_id,),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return 0
+
+    now_tr = turkey_now_str()
+    for row in rows:
+        result_status = evaluate_signal_result(
+            row["dominant_side"], final_score_home, final_score_away
+        )
+        await db.execute(
+            """UPDATE anomalies SET
+                   final_score_home = ?, final_score_away = ?,
+                   result_status = ?, finished_at = ?,
+                   deletion_reason = CASE
+                       WHEN deleted_at IS NULL THEN 'match_finished'
+                       ELSE COALESCE(deletion_reason, 'manual')
+                   END,
+                   deleted_at = COALESCE(deleted_at, datetime('now'))
+               WHERE id = ?""",
+            (
+                final_score_home, final_score_away, result_status,
+                now_tr, row["id"],
+            ),
+        )
+    await db.commit()
+    return len(rows)
 
 
 async def update_anomaly_status(anomaly_id: int, status: str):
@@ -255,7 +365,7 @@ async def soft_delete_anomalies(ids: list[int]):
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
     await db.execute(
-        f"UPDATE anomalies SET deleted_at = datetime('now') "
+        f"UPDATE anomalies SET deleted_at = datetime('now'), deletion_reason = 'manual' "
         f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
         ids,
     )
@@ -266,7 +376,7 @@ async def soft_delete_all_anomalies():
     """Move all non-deleted anomalies to the trash."""
     db = await get_db()
     await db.execute(
-        "UPDATE anomalies SET deleted_at = datetime('now') "
+        "UPDATE anomalies SET deleted_at = datetime('now'), deletion_reason = 'manual' "
         "WHERE deleted_at IS NULL"
     )
     await db.commit()
@@ -277,12 +387,14 @@ async def restore_anomalies(ids: list[int]):
         return
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
-    await db.execute(
-        f"UPDATE anomalies SET deleted_at = NULL "
-        f"WHERE id IN ({placeholders})",
+    cursor = await db.execute(
+        f"UPDATE anomalies SET deleted_at = NULL, deletion_reason = NULL "
+        f"WHERE id IN ({placeholders}) AND result_status = 'pending' "
+        f"AND final_score_home IS NULL AND final_score_away IS NULL",
         ids,
     )
     await db.commit()
+    return cursor.rowcount
 
 
 async def delete_anomalies(ids: list[int]):
@@ -361,7 +473,6 @@ async def clear_database():
         DELETE FROM anomalies;
         DELETE FROM upcoming_analyses;
         DELETE FROM upcoming_matches;
-        DELETE FROM live_match_actions;
     """)
     await db.commit()
 
@@ -404,6 +515,7 @@ async def upsert_upcoming_matches(matches: list[dict], scan_date: str) -> int:
 async def get_upcoming_matches_db(
     scan_date: str | None = None,
     status_filter: str | None = None,
+    min_start_time: int | None = None,
     limit: int = 500,
 ):
     db = await get_db()
@@ -415,6 +527,9 @@ async def get_upcoming_matches_db(
     if status_filter:
         clauses.append("status = ?")
         params.append(status_filter)
+    if min_start_time is not None:
+        clauses.append("CAST(start_time AS INTEGER) >= ?")
+        params.append(min_start_time)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     cursor = await db.execute(
         f"SELECT * FROM upcoming_matches{where} ORDER BY start_time ASC LIMIT ?",
@@ -456,118 +571,6 @@ async def clear_upcoming_matches():
     await db.execute("DELETE FROM upcoming_matches")
     await db.commit()
 
-
-# ---- Live Match Actions CRUD ----
-
-async def get_live_actions(event_ids: list[str] | None = None) -> dict[str, str]:
-    """Return {event_id: status} map for the requested events (or all)."""
-    db = await get_db()
-    if event_ids:
-        placeholders = ",".join("?" for _ in event_ids)
-        cursor = await db.execute(
-            f"SELECT event_id, status FROM live_match_actions "
-            f"WHERE event_id IN ({placeholders})",
-            event_ids,
-        )
-    else:
-        cursor = await db.execute(
-            "SELECT event_id, status FROM live_match_actions"
-        )
-    rows = await cursor.fetchall()
-    return {r["event_id"]: r["status"] for r in rows}
-
-
-def _live_meta_values(meta: dict | None) -> tuple:
-    meta = meta or {}
-    return (
-        str(meta.get("home_team") or ""),
-        str(meta.get("away_team") or ""),
-        int(meta.get("score_home") or 0),
-        int(meta.get("score_away") or 0),
-        int(meta.get("minute") or 0),
-        str(meta.get("league") or ""),
-        str(meta.get("status_desc") or ""),
-    )
-
-
-async def set_live_action(event_id: str, status: str, meta: dict | None = None):
-    db = await get_db()
-    home_team, away_team, score_home, score_away, minute, league, status_desc = _live_meta_values(meta)
-    await db.execute(
-        """INSERT INTO live_match_actions
-             (event_id, home_team, away_team, score_home, score_away, minute,
-              league, status_desc, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-           ON CONFLICT(event_id) DO UPDATE SET
-             home_team = COALESCE(NULLIF(excluded.home_team, ''), live_match_actions.home_team),
-             away_team = COALESCE(NULLIF(excluded.away_team, ''), live_match_actions.away_team),
-             score_home = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                               THEN excluded.score_home ELSE live_match_actions.score_home END,
-             score_away = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                               THEN excluded.score_away ELSE live_match_actions.score_away END,
-             minute = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                           THEN excluded.minute ELSE live_match_actions.minute END,
-             league = COALESCE(NULLIF(excluded.league, ''), live_match_actions.league),
-             status_desc = COALESCE(NULLIF(excluded.status_desc, ''), live_match_actions.status_desc),
-             status = excluded.status,
-             updated_at = excluded.updated_at""",
-        (
-            event_id, home_team, away_team, score_home, score_away, minute,
-            league, status_desc, status,
-        ),
-    )
-    await db.commit()
-
-
-async def bulk_set_live_actions(
-    event_ids: list[str],
-    status: str,
-    metadata_by_id: dict[str, dict] | None = None,
-):
-    if not event_ids:
-        return
-    db = await get_db()
-    for eid in event_ids:
-        home_team, away_team, score_home, score_away, minute, league, status_desc = _live_meta_values(
-            (metadata_by_id or {}).get(str(eid))
-        )
-        await db.execute(
-            """INSERT INTO live_match_actions
-                 (event_id, home_team, away_team, score_home, score_away, minute,
-                  league, status_desc, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-               ON CONFLICT(event_id) DO UPDATE SET
-                 home_team = COALESCE(NULLIF(excluded.home_team, ''), live_match_actions.home_team),
-                 away_team = COALESCE(NULLIF(excluded.away_team, ''), live_match_actions.away_team),
-                 score_home = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                                   THEN excluded.score_home ELSE live_match_actions.score_home END,
-                 score_away = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                                   THEN excluded.score_away ELSE live_match_actions.score_away END,
-                 minute = CASE WHEN excluded.home_team != '' OR excluded.away_team != ''
-                               THEN excluded.minute ELSE live_match_actions.minute END,
-                 league = COALESCE(NULLIF(excluded.league, ''), live_match_actions.league),
-                 status_desc = COALESCE(NULLIF(excluded.status_desc, ''), live_match_actions.status_desc),
-                 status = excluded.status,
-                 updated_at = excluded.updated_at""",
-            (
-                eid, home_team, away_team, score_home, score_away, minute,
-                league, status_desc, status,
-            ),
-        )
-    await db.commit()
-
-
-async def get_following_live_matches() -> list[dict]:
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT event_id, home_team, away_team, score_home, score_away,
-                  minute, league, status_desc, status, created_at, updated_at
-           FROM live_match_actions
-           WHERE status = 'following'
-           ORDER BY updated_at DESC"""
-    )
-    rows = await cursor.fetchall()
-    return [dict(row) for row in rows]
 
 
 async def mark_upcoming_anomaly(event_ids: list[str], scan_date: str):

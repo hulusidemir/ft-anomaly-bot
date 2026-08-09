@@ -2,19 +2,20 @@
 
 A lightweight football anomaly detection platform with:
 
-- Live anomaly scanner worker (20-80 minute window)
+- Anomaly scanner worker (30-85 minute window)
 - Upcoming matches analysis worker (Gemini)
 - Telegram notifications
 - Modern web dashboard
 - SQLite persistence
+- Automatic finished-match grading every 30 minutes
 
 Designed for low-resource VPS environments (1 vCPU / 1 GB RAM class).
 
 ## Features
 
-### Worker 1: Live Match Anomaly Scanner
+### Worker 1: Anomaly Scanner
 
-Runs periodically and analyzes live football matches between minute 20 and 80.
+Runs periodically and analyzes live football matches between minute 30 and 85.
 
 Detects anomalies using two rule groups:
 
@@ -23,7 +24,13 @@ Detects anomalies using two rule groups:
 
 When rules are triggered, it sends formatted Turkish Telegram alerts and stores results in SQLite.
 
-### Worker 2: Upcoming Match Analysis
+### Worker 2: Finished Match Grading
+
+Runs once at startup and then every 30 minutes. It checks every pending signal
+match, archives finished matches, stores the final score, and grades a win bet
+on the signal's superior team. Draws count as failed win bets.
+
+### Worker 3: Upcoming Match Analysis
 
 Runs at:
 
@@ -48,6 +55,8 @@ Flow:
   - Gozardi Et (ignored)
   - Takip Et (following)
 - Persistent row state in SQLite
+- Signal-level success/failure grading with a success-rate summary
+- Finished-score, superior-team, and result filters in the archive
 
 ## Tech Stack
 
@@ -90,6 +99,7 @@ TELEGRAM_CHAT_ID=
 GEMINI_API_KEY=
 DATABASE_PATH=data/anomaly_bot.db
 SCAN_INTERVAL_SECONDS=120
+FINISHED_SCAN_INTERVAL_MINUTES=30
 HOST=0.0.0.0
 PORT=8080
 ```
@@ -114,7 +124,8 @@ Dashboard:
 
 ## Scheduler Jobs
 
-- `live_scan`: interval job, every `SCAN_INTERVAL_SECONDS`
+- `anomaly_scan`: interval job, every `SCAN_INTERVAL_SECONDS`
+- `finished_match_scan`: interval job, every 30 minutes by default
 - `upcoming_morning`: daily at 07:00 Europe/Istanbul
 - `upcoming_evening`: daily at 19:00 Europe/Istanbul
 
@@ -126,6 +137,7 @@ Dashboard:
 - `POST /api/anomalies/{id}/status`
 - `POST /api/anomalies/bulk-status`
 - `POST /api/anomalies/delete`
+- `GET /api/anomalies/deleted?result=successful|failed|pending|unresolved`
 - `GET /api/analyses`
 - `POST /api/analyses/delete`
 

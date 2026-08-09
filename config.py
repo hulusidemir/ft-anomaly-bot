@@ -14,6 +14,9 @@ TELEGRAM_CHAT_ID = TELEGRAM_CHAT_IDS[0] if TELEGRAM_CHAT_IDS else ""
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/anomaly_bot.db")
 SCAN_INTERVAL_SECONDS = int(os.getenv("SCAN_INTERVAL_SECONDS", "120"))
+FINISHED_SCAN_INTERVAL_MINUTES = int(
+    os.getenv("FINISHED_SCAN_INTERVAL_MINUTES", "30")
+)
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 
