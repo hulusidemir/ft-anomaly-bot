@@ -163,6 +163,44 @@ class FinishedMatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row["status"] for row in rows}, {"ignored"})
         self.assertEqual({row["alert_number"] for row in rows}, {1, 2, 3})
 
+    async def test_deleted_unique_filter_updates_items_and_summary(self):
+        await self._insert_home_signal("400")
+        await db.finalize_match_anomalies("400", 1, 0)
+
+        await self._insert_home_signal("500")
+        await db.insert_anomaly(
+            match_id="500",
+            home_team="Home",
+            away_team="Away",
+            score_home=1,
+            score_away=0,
+            minute=65,
+            league="League",
+            condition_type="B",
+            triggered_rules=["away pressure"],
+            stats_snapshot={},
+        )
+        await db.finalize_match_anomalies("500", 2, 1)
+
+        filtered = await db.get_deleted_anomalies(hide_unique=True)
+        summary = await db.get_deleted_anomaly_summary(hide_unique=True)
+
+        self.assertEqual({row["match_id"] for row in filtered}, {"500"})
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["successful"], 1)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["success_rate"], 50.0)
+        self.assertEqual(summary["finished_matches"], 1)
+
+        successful_summary = await db.get_deleted_anomaly_summary(
+            result_filter="successful",
+            hide_unique=True,
+        )
+        self.assertEqual(successful_summary["total"], 1)
+        self.assertEqual(successful_summary["successful"], 1)
+        self.assertEqual(successful_summary["failed"], 0)
+
 
 class FinishedMatchWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_only_finalizes_finished_events(self):

@@ -56,7 +56,7 @@ class SofascoreScraperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scraper._get_session.await_count, 2)
         self.assertTrue(all("X-Requested-With" in headers for headers in session.headers_seen))
 
-    async def test_upcoming_parser_keeps_only_current_future_fixtures(self):
+    async def test_upcoming_parser_keeps_only_rolling_next_24_hours(self):
         scraper = SofascoreScraper()
         now = int(
             datetime.now(TZ_TURKEY)
@@ -65,6 +65,8 @@ class SofascoreScraperTests(unittest.IsolatedAsyncioTestCase):
         )
         future = now + 3600
         stale = now - scraper.UPCOMING_START_GRACE_SECONDS - 1
+        next_day = now + 20 * 3600
+        too_late = now + 25 * 3600
 
         def event(event_id: int, start_timestamp: int) -> dict:
             return {
@@ -78,14 +80,23 @@ class SofascoreScraperTests(unittest.IsolatedAsyncioTestCase):
             }
 
         scraper._fetch_upcoming_by_category = AsyncMock(return_value={
-            "events": [event(1, future), event(2, stale)]
+            "events": [
+                event(1, future),
+                event(2, stale),
+                event(3, next_day),
+                event(4, too_late),
+            ]
         })
 
         with patch("scraper.time.time", return_value=now):
             matches = await scraper.get_upcoming_matches()
 
-        self.assertEqual([match.event_id for match in matches], ["1"])
+        self.assertEqual([match.event_id for match in matches], ["1", "3"])
         self.assertEqual(matches[0].round_info, "Round 3")
+        requested_dates = {
+            call.args[0] for call in scraper._fetch_upcoming_by_category.await_args_list
+        }
+        self.assertEqual(len(requested_dates), 2)
 
     async def test_last_failed_attempt_does_not_sleep_or_rotate(self):
         scraper = SofascoreScraper()

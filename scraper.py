@@ -829,15 +829,30 @@ class SofascoreScraper:
         return {"events": list(events_by_id.values())}
 
     async def get_upcoming_matches(self) -> list[UpcomingMatch]:
-        """Fetch today's upcoming (scheduled) football matches."""
-        today = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
-        data = await self._fetch_upcoming_by_category(today)
-        if not data:
+        """Fetch not-started football matches in the rolling next 24 hours."""
+        now_ts = int(time.time())
+        horizon_ts = now_ts + 24 * 60 * 60
+        schedule_dates = sorted({
+            datetime.fromtimestamp(now_ts, tz=TZ_TURKEY).strftime("%Y-%m-%d"),
+            datetime.fromtimestamp(horizon_ts, tz=TZ_TURKEY).strftime("%Y-%m-%d"),
+        })
+        daily_results = await asyncio.gather(
+            *(self._fetch_upcoming_by_category(date) for date in schedule_dates)
+        )
+        successful_results = [data for data in daily_results if data is not None]
+        if not successful_results:
             logger.error("Failed to fetch upcoming matches")
             return []
 
+        events_by_id: dict[str, dict] = {}
+        for data in successful_results:
+            for event in data.get("events", []):
+                event_id = event.get("id")
+                if event_id is not None:
+                    events_by_id[str(event_id)] = event
+
         matches = []
-        for event in data.get("events", []):
+        for event in events_by_id.values():
             try:
                 status = event.get("status", {})
                 status_type = status.get("type", "")
@@ -858,12 +873,7 @@ class SofascoreScraper:
                 if not start_ts:
                     continue
                 start_ts = int(start_ts)
-                if start_ts < int(time.time()) - self.UPCOMING_START_GRACE_SECONDS:
-                    continue
-                event_date = datetime.fromtimestamp(
-                    start_ts, tz=TZ_TURKEY
-                ).strftime("%Y-%m-%d")
-                if event_date != today:
+                if start_ts < now_ts or start_ts > horizon_ts:
                     continue
                 start_time = str(start_ts)
 

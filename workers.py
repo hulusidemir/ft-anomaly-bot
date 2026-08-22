@@ -3,8 +3,8 @@ Background workers:
   1. Anomaly scanner — runs every SCAN_INTERVAL_SECONDS
   2. Finished-match scanner — grades completed signal matches
 
-Upcoming fixtures can still be refreshed manually from the dashboard. They are
-not scheduled, analyzed by an AI model, or sent to Telegram.
+The rolling next-24-hour fixture list is refreshed only on an explicit
+dashboard request. It is not scheduled, analyzed by AI, or sent to Telegram.
 """
 
 import asyncio
@@ -117,8 +117,6 @@ async def anomaly_scan():
             if anomaly_count > 0:
                 logger.info(f"Detected {anomaly_count} new anomalies")
                 if anomaly_event_ids:
-                    # Mark the match both under today's and yesterday's scan_date
-                    # so late-night kick-offs that span midnight still get tagged.
                     now_tr = datetime.now(TZ_TURKEY)
                     today = now_tr.strftime("%Y-%m-%d")
                     yesterday = (now_tr - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -190,16 +188,16 @@ async def finished_match_scan() -> dict:
 
 
 async def refresh_upcoming_matches() -> dict:
-    """Fetch and store upcoming matches after an explicit dashboard request."""
+    """Fetch and store fixtures starting within the rolling next 24 hours."""
     if _upcoming_lock.locked():
-        logger.debug("Upcoming scan already running, skipping")
-        return {"ok": False, "busy": True, "error": "Upcoming scan already running"}
+        logger.debug("Upcoming refresh already running, skipping")
+        return {"ok": False, "busy": True, "error": "Upcoming refresh already running"}
 
     async with _upcoming_lock:
-        logger.info("Starting manual upcoming match refresh...")
+        logger.info("Starting manual next-24-hour fixture refresh...")
         try:
             matches = await scraper.get_upcoming_matches()
-            logger.info(f"Found {len(matches)} upcoming matches")
+            logger.info("Found %s fixtures in the next 24 hours", len(matches))
 
             if not matches:
                 fetch_error = scraper.last_fetch_error or {}
@@ -210,24 +208,20 @@ async def refresh_upcoming_matches() -> dict:
                     "error": fetch_error.get("message"),
                 }
 
-            # ── 0. Save matches to DB ──
             scan_date = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
             match_dicts = [
                 {
-                    "event_id": m.event_id,
-                    "home_team": m.home_team,
-                    "away_team": m.away_team,
-                    "league": m.league,
-                    "start_time": m.start_time,
-                    "round_info": m.round_info,
+                    "event_id": match.event_id,
+                    "home_team": match.home_team,
+                    "away_team": match.away_team,
+                    "league": match.league,
+                    "start_time": match.start_time,
+                    "round_info": match.round_info,
                 }
-                for m in matches
+                for match in matches
             ]
-            inserted = await upsert_upcoming_matches(match_dicts, scan_date)
-            logger.info(f"Saved {inserted} new upcoming matches to DB")
-
-            return {"ok": True, "count": len(matches), "saved": inserted}
-
-        except Exception as e:
-            logger.error(f"Upcoming refresh error: {e}", exc_info=True)
-            return {"ok": False, "error": str(e)}
+            saved = await upsert_upcoming_matches(match_dicts, scan_date)
+            return {"ok": True, "count": len(matches), "saved": saved}
+        except Exception as exc:
+            logger.error("Upcoming refresh error: %s", exc, exc_info=True)
+            return {"ok": False, "error": str(exc)}

@@ -33,6 +33,16 @@ class LiveSectionsRemovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('data-tab="analyses"', dashboard)
         self.assertNotIn("btn-ai-analysis", dashboard)
 
+    def test_manual_rolling_upcoming_page_and_routes_are_available(self):
+        paths = {route.path for route in app.routes}
+        dashboard = Path("templates/dashboard.html").read_text(encoding="utf-8")
+
+        self.assertIn("/api/upcoming", paths)
+        self.assertIn("/api/trigger/upcoming-scan", paths)
+        self.assertIn('data-tab="upcoming"', dashboard)
+        self.assertIn("btn-trigger-upcoming", dashboard)
+        self.assertIn("Gelecek 24 Saat", dashboard)
+
     async def test_init_removes_legacy_live_action_table(self):
         previous_path = db.DATABASE_PATH
         previous_db = db._db

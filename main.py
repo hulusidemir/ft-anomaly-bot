@@ -170,16 +170,26 @@ async def api_clear_anomalies():
 
 
 @app.get("/api/anomalies/deleted")
-async def api_get_deleted_anomalies(result: str | None = None):
+async def api_get_deleted_anomalies(
+    result: str | None = None,
+    hide_unique: bool = False,
+):
     if result not in (None, "successful", "failed", "pending", "unresolved"):
         return JSONResponse({"error": "Invalid result filter"}, status_code=400)
-    rows = await get_deleted_anomalies(result_filter=result)
+    rows = await get_deleted_anomalies(
+        result_filter=result,
+        hide_unique=hide_unique,
+    )
     for row in rows:
         if isinstance(row.get("triggered_rules"), str):
             row["triggered_rules"] = json.loads(row["triggered_rules"])
         if isinstance(row.get("stats_snapshot"), str):
             row["stats_snapshot"] = json.loads(row["stats_snapshot"])
-    return {"items": rows, "summary": await get_deleted_anomaly_summary()}
+    summary = await get_deleted_anomaly_summary(
+        result_filter=result,
+        hide_unique=hide_unique,
+    )
+    return {"items": rows, "summary": summary}
 
 
 @app.post("/api/anomalies/restore")
@@ -210,21 +220,21 @@ async def api_purge_all_anomalies():
     return {"ok": True}
 
 
-# ---- Upcoming Matches Endpoints ----
+# ---- Rolling Next-24-Hour Fixtures ----
 
 @app.get("/api/upcoming")
-async def api_upcoming(date: str | None = None, status: str | None = None):
-    min_start_time = None
-    if date is None:
-        date = datetime.now(config.TZ_TURKEY).strftime("%Y-%m-%d")
-        min_start_time = int(time.time()) - scraper.UPCOMING_START_GRACE_SECONDS
-    rows = await get_upcoming_matches_db(
-        scan_date=date,
+async def api_upcoming(status: str | None = None):
+    if status not in (None, "new", "following", "ignored"):
+        return JSONResponse({"error": "Invalid status filter"}, status_code=400)
+    now_ts = int(time.time())
+    scan_date = datetime.now(config.TZ_TURKEY).strftime("%Y-%m-%d")
+    return await get_upcoming_matches_db(
+        scan_date=scan_date,
         status_filter=status,
-        min_start_time=min_start_time,
-        limit=2000,
+        min_start_time=now_ts,
+        max_start_time=now_ts + 24 * 60 * 60,
+        limit=10000,
     )
-    return rows
 
 
 @app.post("/api/upcoming/{match_id}/status")
@@ -325,11 +335,10 @@ async def trigger_upcoming_scan():
     if not result.get("ok"):
         status_code = 409 if result.get("busy") else 502
         return JSONResponse(
-            {"error": result.get("error") or "Upcoming matches could not be fetched"},
+            {"error": result.get("error") or "Upcoming fixtures could not be fetched"},
             status_code=status_code,
         )
     return result
-
 
 @app.post("/api/trigger/finished-scan")
 async def trigger_finished_scan():

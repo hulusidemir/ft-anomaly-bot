@@ -6,7 +6,13 @@ const API = {
     bulkStatus: '/api/anomalies/bulk-status',
     deleteAnomalies: '/api/anomalies/delete',
     clearAnomalies: '/api/anomalies/clear',
-    deletedAnomalies: (result) => `/api/anomalies/deleted${result ? `?result=${result}` : ''}`,
+    deletedAnomalies: (result, hideUnique) => {
+        const params = new URLSearchParams();
+        if (result) params.set('result', result);
+        if (hideUnique) params.set('hide_unique', 'true');
+        const query = params.toString();
+        return `/api/anomalies/deleted${query ? `?${query}` : ''}`;
+    },
     restoreAnomalies: '/api/anomalies/restore',
     purgeAnomalies: '/api/anomalies/purge',
     purgeAllAnomalies: '/api/anomalies/purge-all',
@@ -152,16 +158,12 @@ function updateOverview() {
     const newAnomalies = anomalies.filter((item) => item.status === 'new').length;
     const followingAnomalies = anomalies.filter((item) => item.status === 'following').length;
     const followingUpcoming = upcomingMatches.filter((item) => item.status === 'following').length;
-    const flaggedUpcoming = upcomingMatches.filter((item) => item.has_anomaly).length;
 
     setText('#metric-anomalies', String(anomalyTotal));
     setText('#metric-anomalies-detail', `${newAnomalies} yeni, ${followingAnomalies} takipte`);
 
     setText('#metric-following', String(followingAnomalies + followingUpcoming));
-    setText('#metric-following-detail', `${followingAnomalies} anomali, ${followingUpcoming} yaklaşan maç`);
-
-    setText('#metric-upcoming', String(upcomingMatches.length));
-    setText('#metric-upcoming-detail', `${flaggedUpcoming} anomali etiketi taşıyan maç`);
+    setText('#metric-following-detail', `${followingAnomalies} anomali, ${followingUpcoming} gelecek maç`);
 
     setText('#scheduler-count', `${schedulerJobs.length}`);
     setAttr('#status-pill', 'aria-label', `Sistem durumu, ${schedulerJobs.length} görev`);
@@ -514,24 +516,22 @@ function getVisibleUpcomingMatches() {
         `${item.home_team} ${item.away_team} ${item.league} ${item.round_info || ''}`
     );
 
-    filtered = sortData(filtered, 'upcoming-table', (item, key) => {
+    return sortData(filtered, 'upcoming-table', (item, key) => {
         switch (key) {
             case 'match':
                 return `${item.home_team} ${item.away_team}`.toLowerCase();
             case 'start':
-                return item.start_time || 0;
+                return Number(item.start_time) || 0;
             case 'league':
                 return (item.league || '').toLowerCase();
             case 'round':
                 return (item.round_info || '').toLowerCase();
             case 'status':
-                return item.has_anomaly ? '0' : '1';
+                return item.status || 'new';
             default:
                 return '';
         }
     });
-
-    return filtered;
 }
 
 function renderUpcoming() {
@@ -542,16 +542,17 @@ function renderUpcoming() {
     updateUpcomingBulk();
 
     const filtered = getVisibleUpcomingMatches();
-
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Yaklaşan maç bulunamadı</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Gelecek 24 saatte maç bulunamadı veya liste henüz çekilmedi</td></tr>';
         return;
     }
 
     tbody.innerHTML = filtered.map((item) => {
         const stateClass = item.status !== 'new' ? `state-${item.status}` : '';
         const anomalyClass = item.has_anomaly ? 'anomaly-row' : '';
-        const anomalyBadge = item.has_anomaly ? '<span class="badge badge-anomaly">Anomali etiketi</span>' : '';
+        const anomalyBadge = item.has_anomaly
+            ? '<span class="badge badge-anomaly">Anomali etiketi</span>'
+            : '';
 
         return `
         <tr class="${stateClass} ${anomalyClass}" data-id="${item.id}">
@@ -564,7 +565,7 @@ function renderUpcoming() {
                     <span class="cell-subtle">Etkinlik ID: ${escHtml(item.event_id)}</span>
                 </div>
             </td>
-            <td><span class="time-pill">${formatStartTime(item.start_time, item.scan_date)}</span></td>
+            <td><span class="time-pill">${formatStartTime(item.start_time)}</span></td>
             <td>${escHtml(item.league || '-')}</td>
             <td>${escHtml(item.round_info || '-')}</td>
             <td>
@@ -595,14 +596,13 @@ function renderUpcoming() {
 async function copyUpcomingMatches() {
     const filtered = getVisibleUpcomingMatches();
     if (!filtered.length) {
-        toast('Kopyalanacak yaklaşan maç bulunamadı', true);
+        toast('Kopyalanacak maç bulunamadı', true);
         return;
     }
 
-    const text = filtered.map((item) => {
-        const matchName = `${item.home_team} vs ${item.away_team}`;
-        return `${formatStartTime(item.start_time, item.scan_date)} - ${matchName}`;
-    }).join('\n');
+    const text = filtered.map((item) =>
+        `${formatStartTime(item.start_time)} - ${item.home_team} vs ${item.away_team}`
+    ).join('\n');
 
     try {
         if (navigator.clipboard && window.isSecureContext) {
@@ -618,7 +618,6 @@ async function copyUpcomingMatches() {
             document.execCommand('copy');
             textarea.remove();
         }
-
         toast(`${filtered.length} maç kopyalandı`);
     } catch (error) {
         toast(`Kopyalama başarısız: ${error.message}`, true);
@@ -663,7 +662,6 @@ async function bulkUpcomingStatus(status) {
         const match = upcomingMatches.find((item) => item.id === id);
         if (match) match.status = status;
     });
-
     renderUpcoming();
     updateOverview();
     toast(`${ids.length} maç güncellendi: ${upcomingStatusLabel(status)}`);
@@ -685,26 +683,22 @@ $('#btn-bulk-ignore-upcoming').addEventListener('click', () => bulkUpcomingStatu
 
 $('#btn-bulk-delete-upcoming').addEventListener('click', async () => {
     if (!confirm(`${selectedUpcoming.size} maç kaydı silinsin mi?`)) return;
-
     const ids = [...selectedUpcoming];
     const result = await apiPost(API.deleteUpcoming, { ids });
     if (!result || !result.ok) return;
-
     toast(`${ids.length} maç silindi`);
     await loadUpcoming();
 });
 
 $('#btn-clear-all-upcoming').addEventListener('click', async () => {
-    if (!confirm('Tüm yaklaşan maç kayıtları silinsin mi? Bu işlem geri alınamaz.')) return;
-
+    if (!confirm('24 saatlik maç kayıtları silinsin mi?')) return;
     const ok = await clearAllWithFallback({
         clearUrl: API.clearUpcoming,
         deleteUrl: API.deleteUpcoming,
         ids: upcomingMatches.map((item) => item.id),
         emptyText: 'Silinecek maç kaydı bulunamadı',
-        successText: 'Tüm maç kayıtları silindi',
+        successText: '24 saatlik maç kayıtları silindi',
     });
-
     if (ok) await loadUpcoming();
 });
 
@@ -715,16 +709,15 @@ $('#btn-copy-upcoming').addEventListener('click', copyUpcomingMatches);
 
 $('#btn-trigger-upcoming').addEventListener('click', async () => {
     const button = $('#btn-trigger-upcoming');
-    setButtonBusy(button, 'Çekiliyor...', 'Maçları Çek', true);
-
+    setButtonBusy(button, 'Çekiliyor...', 'Gelecek Maçları Çek', true);
     try {
         const result = await apiPost(API.triggerUpcoming, {});
         if (result && result.ok) {
             await loadUpcoming();
-            toast(`${result.count} yaklaşan maç güncellendi`);
+            toast(`Gelecek 24 saat için ${result.count} maç güncellendi`);
         }
     } finally {
-        setButtonBusy(button, 'Çekiliyor...', 'Maçları Çek', false);
+        setButtonBusy(button, 'Çekiliyor...', 'Gelecek Maçları Çek', false);
     }
 });
 
@@ -956,7 +949,8 @@ function formatNumber(value, decimals = null) {
 
 async function loadDeletedAnomalies() {
     const resultFilter = ($('#filter-deleted-result') || {}).value || '';
-    const data = await apiFetch(API.deletedAnomalies(resultFilter));
+    const hideUnique = Boolean(($('#filter-deleted-hide-unique') || {}).checked);
+    const data = await apiFetch(API.deletedAnomalies(resultFilter, hideUnique));
     if (!data) return;
 
     // Accept the old array response during rolling deployments.
@@ -1108,6 +1102,7 @@ $('#select-all-deleted').addEventListener('change', (event) => {
 
 $('#btn-refresh-deleted').addEventListener('click', loadDeletedAnomalies);
 $('#filter-deleted-result').addEventListener('change', loadDeletedAnomalies);
+$('#filter-deleted-hide-unique').addEventListener('change', loadDeletedAnomalies);
 $('#search-deleted').addEventListener('input', renderDeletedAnomalies);
 
 async function triggerFinishedCheck() {
@@ -1171,7 +1166,7 @@ $('#btn-refresh-all').addEventListener('click', async () => {
 });
 
 $('#btn-clear-database').addEventListener('click', async () => {
-    if (!confirm('Tüm veritabanı kayıtları temizlensin mi? Anomaliler ve yaklaşan maçlar silinecek.')) return;
+    if (!confirm('Tüm anomali ve 24 saatlik maç kayıtları temizlensin mi?')) return;
 
     const button = $('#btn-clear-database');
     setButtonBusy(button, 'Temizleniyor...', 'VERİTABANINI TEMİZLE', true);
@@ -1206,27 +1201,16 @@ function escHtml(value) {
         .replace(/"/g, '&quot;');
 }
 
-function formatStartTime(startTime, scanDate) {
-    if (!startTime) return '-';
-
-    const numericValue = Number(startTime);
-    if (numericValue > 86400) {
-        const date = new Date(numericValue * 1000);
-        return date.toLocaleString('tr-TR', {
-            timeZone: 'Europe/Istanbul',
-            day: '2-digit',
-            month: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
-    }
-
-    if (typeof startTime === 'string' && startTime.includes(':')) {
-        const datePart = scanDate || '';
-        return datePart ? `${datePart.slice(8, 10)}.${datePart.slice(5, 7)} ${startTime}` : startTime;
-    }
-
-    return '-';
+function formatStartTime(startTime) {
+    const timestamp = Number(startTime);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return '-';
+    return new Date(timestamp * 1000).toLocaleString('tr-TR', {
+        timeZone: 'Europe/Istanbul',
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
 }
 
 function formatCreatedAt(value, includeDate = false) {
@@ -1277,6 +1261,5 @@ async function refreshAllData() {
     await refreshAllData();
 
     setInterval(loadAnomalies, 60000);
-    setInterval(loadUpcoming, 60000);
     setInterval(checkStatus, 30000);
 })();

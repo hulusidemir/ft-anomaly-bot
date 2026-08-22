@@ -42,8 +42,10 @@ on the signal's superior team. Draws count as failed win bets.
 - Persistent row state in SQLite
 - Match-wide actions: every current and future signal inherits the match state
 - Clickable `2. sinyal`, `3. sinyal`, etc. labels for match-only filtering
-- Manual upcoming-fixture refresh (no scheduled AI analysis or Telegram report)
+- Manual rolling 24-hour fixture refresh (no scheduled AI analysis or Telegram report)
 - Signal-level success/failure grading with a success-rate summary
+- Archive filters for successful, failed, pending, and unresolved signals
+- Optional unique-signal hiding with a filter-aware summary
 - Finished-score, superior-team, and result filters in the archive
 
 ## Tech Stack
@@ -137,7 +139,8 @@ Check it with `systemctl status ft-anomaly-bot.service` and follow logs with
 - `POST /api/anomalies/bulk-status`
 - `POST /api/anomalies/delete`
 - `GET /api/anomalies/deleted?result=successful|failed|pending|unresolved`
-- `POST /api/trigger/upcoming-scan` (manual fixture refresh only)
+- `GET /api/upcoming` (current rolling 24-hour snapshot)
+- `POST /api/trigger/upcoming-scan` (manual refresh only)
 
 ## Notes
 

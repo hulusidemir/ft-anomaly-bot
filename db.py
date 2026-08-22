@@ -69,6 +69,7 @@ async def init_db():
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_upcoming_event
             ON upcoming_matches(event_id, scan_date);
+
     """)
     await db.commit()
     # Gemini analysis was removed; discard its obsolete local cache table.
@@ -260,29 +261,60 @@ async def get_anomalies(status_filter: str | None = None, limit: int = 200):
 
 
 async def get_deleted_anomalies(
-    result_filter: str | None = None, limit: int = 500
+    result_filter: str | None = None,
+    hide_unique: bool = False,
+    limit: int = 500,
 ):
     db = await get_db()
+    clauses = ["deleted_at IS NOT NULL"]
+    params: list = []
     if result_filter:
-        cursor = await db.execute(
-            "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
-            "AND result_status = ? ORDER BY deleted_at DESC LIMIT ?",
-            (result_filter, limit),
-        )
-    else:
-        cursor = await db.execute(
-            "SELECT * FROM anomalies WHERE deleted_at IS NOT NULL "
-            "ORDER BY deleted_at DESC LIMIT ?",
-            (limit,),
-        )
+        clauses.append("result_status = ?")
+        params.append(result_filter)
+    if hide_unique:
+        clauses.append("(match_signal_count > 1 OR match_max_alert_number > 1)")
+    where = " AND ".join(clauses)
+    cursor = await db.execute(
+        f"""WITH counted AS (
+                SELECT a.*,
+                       COUNT(*) OVER (PARTITION BY match_id) AS match_signal_count,
+                       MAX(COALESCE(alert_number, 1)) OVER (PARTITION BY match_id)
+                           AS match_max_alert_number
+                FROM anomalies AS a
+            )
+            SELECT * FROM counted
+            WHERE {where}
+            ORDER BY deleted_at DESC LIMIT ?""",
+        params + [limit],
+    )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
 
 
-async def get_deleted_anomaly_summary() -> dict:
+async def get_deleted_anomaly_summary(
+    result_filter: str | None = None,
+    hide_unique: bool = False,
+) -> dict:
     db = await get_db()
+    clauses = ["deleted_at IS NOT NULL"]
+    params: list = []
+    if result_filter:
+        clauses.append("result_status = ?")
+        params.append(result_filter)
+    if hide_unique:
+        clauses.append("(match_signal_count > 1 OR match_max_alert_number > 1)")
+    where = " AND ".join(clauses)
     cursor = await db.execute(
-        """SELECT
+        f"""WITH counted AS (
+                SELECT a.*,
+                       COUNT(*) OVER (PARTITION BY match_id) AS match_signal_count,
+                       MAX(COALESCE(alert_number, 1)) OVER (PARTITION BY match_id)
+                           AS match_max_alert_number
+                FROM anomalies AS a
+            ), filtered AS (
+                SELECT * FROM counted WHERE {where}
+            )
+            SELECT
                COUNT(*) AS total,
                SUM(CASE WHEN result_status = 'successful' THEN 1 ELSE 0 END) AS successful,
                SUM(CASE WHEN result_status = 'failed' THEN 1 ELSE 0 END) AS failed,
@@ -291,7 +323,8 @@ async def get_deleted_anomaly_summary() -> dict:
                COUNT(DISTINCT CASE WHEN final_score_home IS NOT NULL
                                    AND final_score_away IS NOT NULL
                                    THEN match_id END) AS finished_matches
-           FROM anomalies WHERE deleted_at IS NOT NULL"""
+           FROM filtered""",
+        params,
     )
     row = dict(await cursor.fetchone())
     successful = int(row.get("successful") or 0)
@@ -501,10 +534,10 @@ async def close_db():
 # ---- Upcoming Matches CRUD ----
 
 async def upsert_upcoming_matches(matches: list[dict], scan_date: str) -> int:
-    """Insert or update upcoming matches for a given scan date. Returns count inserted/updated."""
+    """Insert or update the rolling 24-hour fixture snapshot."""
     db = await get_db()
     count = 0
-    for m in matches:
+    for match in matches:
         cursor = await db.execute(
             """INSERT INTO upcoming_matches
                (event_id, home_team, away_team, league, start_time, round_info, scan_date)
@@ -516,8 +549,9 @@ async def upsert_upcoming_matches(matches: list[dict], scan_date: str) -> int:
                  start_time=excluded.start_time,
                  round_info=excluded.round_info""",
             (
-                m["event_id"], m["home_team"], m["away_team"],
-                m["league"], m["start_time"], m["round_info"], scan_date,
+                match["event_id"], match["home_team"], match["away_team"],
+                match["league"], match["start_time"], match["round_info"],
+                scan_date,
             ),
         )
         if cursor.rowcount > 0:
@@ -530,6 +564,7 @@ async def get_upcoming_matches_db(
     scan_date: str | None = None,
     status_filter: str | None = None,
     min_start_time: int | None = None,
+    max_start_time: int | None = None,
     limit: int = 500,
 ):
     db = await get_db()
@@ -544,13 +579,15 @@ async def get_upcoming_matches_db(
     if min_start_time is not None:
         clauses.append("CAST(start_time AS INTEGER) >= ?")
         params.append(min_start_time)
+    if max_start_time is not None:
+        clauses.append("CAST(start_time AS INTEGER) <= ?")
+        params.append(max_start_time)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     cursor = await db.execute(
         f"SELECT * FROM upcoming_matches{where} ORDER BY start_time ASC LIMIT ?",
         params + [limit],
     )
-    rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
+    return [dict(row) for row in await cursor.fetchall()]
 
 
 async def update_upcoming_match_status(match_id: int, status: str):
@@ -574,9 +611,7 @@ async def bulk_update_upcoming_status(ids: list[int], status: str):
 async def delete_upcoming_matches(ids: list[int]):
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
-    await db.execute(
-        f"DELETE FROM upcoming_matches WHERE id IN ({placeholders})", ids
-    )
+    await db.execute(f"DELETE FROM upcoming_matches WHERE id IN ({placeholders})", ids)
     await db.commit()
 
 
@@ -586,15 +621,15 @@ async def clear_upcoming_matches():
     await db.commit()
 
 
-
 async def mark_upcoming_anomaly(event_ids: list[str], scan_date: str):
-    """Mark upcoming matches that have a live anomaly detected."""
+    """Mark rolling-snapshot fixtures for which a live anomaly was detected."""
     if not event_ids:
         return
     db = await get_db()
     placeholders = ",".join("?" for _ in event_ids)
     await db.execute(
-        f"UPDATE upcoming_matches SET has_anomaly = 1 WHERE event_id IN ({placeholders}) AND scan_date = ?",
+        f"UPDATE upcoming_matches SET has_anomaly = 1 "
+        f"WHERE event_id IN ({placeholders}) AND scan_date = ?",
         event_ids + [scan_date],
     )
     await db.commit()

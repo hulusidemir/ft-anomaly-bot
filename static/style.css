@@ -816,6 +816,27 @@ input[type="checkbox"]:checked::before {
     font-size: 0.84rem;
 }
 
+.filter-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 42px;
+    padding: 0 13px;
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-pill);
+    color: var(--text-soft);
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 0.84rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+.filter-check:has(input:checked) {
+    color: #ffdfd1;
+    border-color: rgba(255, 138, 91, 0.3);
+    background: rgba(255, 138, 91, 0.1);
+}
+
 .rules-list {
     list-style: none;
     display: grid;
