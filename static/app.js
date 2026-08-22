@@ -10,9 +10,6 @@ const API = {
     restoreAnomalies: '/api/anomalies/restore',
     purgeAnomalies: '/api/anomalies/purge',
     purgeAllAnomalies: '/api/anomalies/purge-all',
-    analyses: '/api/analyses',
-    deleteAnalyses: '/api/analyses/delete',
-    clearAnalyses: '/api/analyses/clear',
     anomalyDetails: (id) => `/api/anomalies/${encodeURIComponent(id)}/details`,
     upcoming: (status) => `/api/upcoming${status ? `?status=${status}` : ''}`,
     updateUpcomingStatus: (id) => `/api/upcoming/${id}/status`,
@@ -36,7 +33,6 @@ const ICONS = {
 };
 
 let anomalies = [];
-let analyses = [];
 let upcomingMatches = [];
 let deletedAnomalies = [];
 let deletedSummary = {
@@ -46,13 +42,13 @@ let deletedSummary = {
 let schedulerJobs = [];
 
 const selectedAnomalies = new Set();
-const selectedAnalyses = new Set();
 const selectedUpcoming = new Set();
 const selectedDeleted = new Set();
 
 const anomalyDetailsCache = new Map();
 const anomalyDetailsInFlight = new Map();
 const expandedAnomalyRows = new Set();
+let activeAnomalyMatchFilter = null;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -157,18 +153,12 @@ function updateOverview() {
     const followingAnomalies = anomalies.filter((item) => item.status === 'following').length;
     const followingUpcoming = upcomingMatches.filter((item) => item.status === 'following').length;
     const flaggedUpcoming = upcomingMatches.filter((item) => item.has_anomaly).length;
-    const latestAnalysis = analyses[0];
 
     setText('#metric-anomalies', String(anomalyTotal));
     setText('#metric-anomalies-detail', `${newAnomalies} yeni, ${followingAnomalies} takipte`);
 
     setText('#metric-following', String(followingAnomalies + followingUpcoming));
     setText('#metric-following-detail', `${followingAnomalies} anomali, ${followingUpcoming} yaklaşan maç`);
-
-    setText('#metric-analyses', String(analyses.length));
-    setText('#metric-analyses-detail', latestAnalysis
-        ? `Son rapor: ${runTypeLabel(latestAnalysis.run_type)}`
-        : 'Henüz analiz kaydı yok');
 
     setText('#metric-upcoming', String(upcomingMatches.length));
     setText('#metric-upcoming-detail', `${flaggedUpcoming} anomali etiketi taşıyan maç`);
@@ -285,6 +275,11 @@ async function loadAnomalies() {
     if (!data) return;
 
     anomalies = data;
+    if (activeAnomalyMatchFilter && !anomalies.some(
+        (item) => String(item.match_id) === activeAnomalyMatchFilter
+    )) {
+        activeAnomalyMatchFilter = null;
+    }
     renderAnomalies();
     updateOverview();
     touchLastUpdated();
@@ -301,6 +296,11 @@ function renderAnomalies() {
     let filtered = filterBySearch(anomalies, searchQuery, (item) =>
         `${item.home_team} ${item.away_team} ${item.league} ${item.condition_type}`
     );
+    if (activeAnomalyMatchFilter) {
+        filtered = filtered.filter(
+            (item) => String(item.match_id) === activeAnomalyMatchFilter
+        );
+    }
 
     filtered = sortData(filtered, 'anomaly-table', (item, key) => {
         switch (key) {
@@ -314,8 +314,6 @@ function renderAnomalies() {
                 return (item.league || '').toLowerCase();
             case 'condition':
                 return item.condition_type;
-            case 'alert':
-                return item.alert_number || 1;
             case 'time':
                 return item.detected_at_tr || item.created_at || '';
             default:
@@ -324,7 +322,7 @@ function renderAnomalies() {
     });
 
     if (!filtered.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="empty-msg">Anomali bulunamadı</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">Anomali bulunamadı</td></tr>';
         return;
     }
 
@@ -339,9 +337,9 @@ function renderAnomalies() {
             ? '<span class="badge badge-a">A / Beraberlik</span>'
             : '<span class="badge badge-b">B / 1 Fark</span>';
         const alertNumber = item.alert_number || 1;
-        const alertBadge = alertNumber > 1
-            ? `<span class="badge badge-alert badge-alert-multi">${alertNumber}. uyarı</span>`
-            : '<span class="badge badge-alert">1. uyarı</span>';
+        const signalBadge = alertNumber > 1
+            ? `<button type="button" class="signal-filter${activeAnomalyMatchFilter === String(item.match_id) ? ' active' : ''}" data-match-id="${escHtml(item.match_id)}" title="Bu maçın sinyallerini göster">${alertNumber}. sinyal</button>`
+            : '';
 
         const isExpanded = expandedAnomalyRows.has(item.id);
         const expandedClass = isExpanded ? 'expanded' : '';
@@ -354,6 +352,7 @@ function renderAnomalies() {
                     <a class="match-link" href="${sofascoreEventUrl(item.match_id)}" target="_blank" rel="noopener noreferrer">
                         ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
                     </a>
+                    ${signalBadge}
                     <span class="cell-subtle">Maç ID: ${escHtml(item.match_id)}</span>
                 </div>
             </td>
@@ -367,7 +366,6 @@ function renderAnomalies() {
             </td>
             <td>${conditionBadge}</td>
             <td><ul class="rules-list">${ruleHtml}</ul></td>
-            <td>${alertBadge}</td>
             <td><span class="time-pill">${time}</span></td>
             <td>
                 <div class="row-actions row-actions-icons">
@@ -380,7 +378,7 @@ function renderAnomalies() {
             </td>
         </tr>
         <tr class="anomaly-row-details" data-aid-details="${item.id}" style="${detailsHidden}">
-            <td colspan="10">
+            <td colspan="9">
                 <div class="anomaly-details">Detaylar yükleniyor...</div>
             </td>
         </tr>`;
@@ -396,6 +394,15 @@ function renderAnomalies() {
             updateBulkButtons();
         });
     });
+    $$('.signal-filter').forEach((button) => {
+        button.addEventListener('click', () => {
+            const matchId = String(button.dataset.matchId);
+            const wasActive = activeAnomalyMatchFilter === matchId;
+            activeAnomalyMatchFilter = wasActive ? null : matchId;
+            renderAnomalies();
+            toast(wasActive ? 'Maç filtresi kaldırıldı' : 'Yalnızca bu maçın sinyalleri gösteriliyor');
+        });
+    });
 }
 
 async function setStatus(id, status) {
@@ -403,18 +410,11 @@ async function setStatus(id, status) {
     if (!anomaly) return;
 
     const newStatus = anomaly.status === status ? 'new' : status;
-    const siblings = anomalies.filter((item) => item.match_id === anomaly.match_id);
-    const ids = siblings.map((item) => item.id);
-
-    const result = ids.length > 1
-        ? await apiPost(API.bulkStatus, { ids, status: newStatus })
-        : await apiPost(API.updateStatus(id), { status: newStatus });
+    const result = await apiPost(API.updateStatus(id), { status: newStatus });
     if (!result || !result.ok) return;
 
-    siblings.forEach((item) => { item.status = newStatus; });
-    renderAnomalies();
-    updateOverview();
-    const extra = siblings.length > 1 ? ` (${siblings.length} sinyal)` : '';
+    await loadAnomalies();
+    const extra = result.updated > 1 ? ` (${result.updated} sinyal)` : '';
     toast(`Durum güncellendi: ${statusLabel(newStatus)}${extra}`);
 }
 
@@ -449,14 +449,8 @@ async function bulkStatus(status) {
     const result = await apiPost(API.bulkStatus, { ids, status });
     if (!result || !result.ok) return;
 
-    ids.forEach((id) => {
-        const anomaly = anomalies.find((item) => item.id === id);
-        if (anomaly) anomaly.status = status;
-    });
-
-    renderAnomalies();
-    updateOverview();
-    toast(`${ids.length} kayıt güncellendi: ${statusLabel(status)}`);
+    await loadAnomalies();
+    toast(`${result.updated || ids.length} sinyal güncellendi: ${statusLabel(status)}`);
 }
 
 $('#select-all-anomalies').addEventListener('change', (event) => {
@@ -502,84 +496,6 @@ $('#btn-clear-all-anomalies').addEventListener('click', async () => {
 $('#filter-status').addEventListener('change', loadAnomalies);
 $('#btn-refresh').addEventListener('click', loadAnomalies);
 $('#search-anomalies').addEventListener('input', renderAnomalies);
-
-async function loadAnalyses() {
-    const data = await apiFetch(API.analyses);
-    if (!data) return;
-
-    analyses = data;
-    renderAnalyses();
-    updateOverview();
-    touchLastUpdated();
-}
-
-function renderAnalyses() {
-    const container = $('#analyses-list');
-    selectedAnalyses.clear();
-    updateAnalysesBulk();
-
-    const searchQuery = ($('#search-analyses') || {}).value || '';
-    const filtered = filterBySearch(analyses, searchQuery, (item) => item.analysis_text || '');
-
-    if (!filtered.length) {
-        container.innerHTML = '<div class="empty-msg">Henüz analiz yok</div>';
-        return;
-    }
-
-    container.innerHTML = filtered.map((item) => `
-        <article class="analysis-card" data-id="${item.id}">
-            <input type="checkbox" class="chk-analysis card-check" data-id="${item.id}">
-            <div class="card-header">
-                <span class="analysis-run">${runTypeLabel(item.run_type)}</span>
-                <span class="card-meta">${item.match_count} maç analiz edildi • ${formatCreatedAt(item.created_at, true)}</span>
-            </div>
-            <div class="card-body">${escHtml(item.analysis_text)}</div>
-        </article>
-    `).join('');
-
-    $$('.chk-analysis').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const id = Number(checkbox.dataset.id);
-            if (checkbox.checked) selectedAnalyses.add(id);
-            else selectedAnalyses.delete(id);
-            updateAnalysesBulk();
-        });
-    });
-}
-
-function updateAnalysesBulk() {
-    const count = selectedAnalyses.size;
-    $('#selected-count-analyses').textContent = `${count} seçili`;
-    $('#btn-delete-analyses').disabled = count === 0;
-}
-
-$('#btn-delete-analyses').addEventListener('click', async () => {
-    if (!confirm(`${selectedAnalyses.size} analiz silinsin mi?`)) return;
-
-    const ids = [...selectedAnalyses];
-    const result = await apiPost(API.deleteAnalyses, { ids });
-    if (!result || !result.ok) return;
-
-    toast(`${ids.length} analiz silindi`);
-    await loadAnalyses();
-});
-
-$('#btn-clear-all-analyses').addEventListener('click', async () => {
-    if (!confirm('Tüm analiz geçmişi silinsin mi? Bu işlem geri alınamaz.')) return;
-
-    const ok = await clearAllWithFallback({
-        clearUrl: API.clearAnalyses,
-        deleteUrl: API.deleteAnalyses,
-        ids: analyses.map((item) => item.id),
-        emptyText: 'Silinecek analiz bulunamadı',
-        successText: 'Tüm analiz geçmişi silindi',
-    });
-
-    if (ok) await loadAnalyses();
-});
-
-$('#btn-refresh-analyses').addEventListener('click', loadAnalyses);
-$('#search-analyses').addEventListener('input', renderAnalyses);
 
 async function loadUpcoming() {
     const filter = $('#filter-upcoming-status').value;
@@ -1255,7 +1171,7 @@ $('#btn-refresh-all').addEventListener('click', async () => {
 });
 
 $('#btn-clear-database').addEventListener('click', async () => {
-    if (!confirm('Tüm veritabanı kayıtları temizlensin mi? Anomaliler, analizler ve yaklaşan maçlar silinecek.')) return;
+    if (!confirm('Tüm veritabanı kayıtları temizlensin mi? Anomaliler ve yaklaşan maçlar silinecek.')) return;
 
     const button = $('#btn-clear-database');
     setButtonBusy(button, 'Temizleniyor...', 'VERİTABANINI TEMİZLE', true);
@@ -1263,7 +1179,6 @@ $('#btn-clear-database').addEventListener('click', async () => {
     const result = await apiPost(API.clearDatabase, {});
     if (result && result.ok) {
         anomalies = [];
-        analyses = [];
         upcomingMatches = [];
         deletedAnomalies = [];
         deletedSummary = {
@@ -1271,7 +1186,6 @@ $('#btn-clear-database').addEventListener('click', async () => {
             evaluated: 0, finished_matches: 0, success_rate: 0,
         };
         renderAnomalies();
-        renderAnalyses();
         renderUpcoming();
         renderDeletedAnomalies();
         renderDeletedSummary();
@@ -1340,15 +1254,6 @@ function formatTurkeyTimestamp(value, includeDate = false) {
         : `${hour}:${minute}`;
 }
 
-function runTypeLabel(runType) {
-    const labels = {
-        morning: 'Sabah raporu',
-        evening: 'Akşam raporu',
-        manual: 'Manuel rapor',
-    };
-    return labels[runType] || 'Rapor';
-}
-
 function statusLabel(status) {
     const labels = {
         new: 'Yeni',
@@ -1359,51 +1264,10 @@ function statusLabel(status) {
     return labels[status] || status || 'Yeni';
 }
 
-$('#btn-ai-analysis').addEventListener('click', async () => {
-    const modal = $('#ai-modal');
-    const meta = $('#modal-meta');
-    const body = $('#modal-body');
-
-    modal.style.display = 'flex';
-    meta.textContent = '';
-    body.textContent = 'Yükleniyor...';
-
-    let data = analyses;
-    if (!data.length) {
-        data = await apiFetch(API.analyses);
-    }
-
-    if (!data || !data.length) {
-        body.innerHTML = '<div class="empty-msg">Henüz yapay zeka analizi bulunmuyor.</div>';
-        return;
-    }
-
-    const latest = data[0];
-    meta.textContent = `${runTypeLabel(latest.run_type)} • ${latest.match_count} maç • ${formatCreatedAt(latest.created_at, true)}`;
-    body.textContent = latest.analysis_text || 'Analiz metni bulunamadı.';
-});
-
-$('#modal-close').addEventListener('click', () => {
-    $('#ai-modal').style.display = 'none';
-});
-
-$('#ai-modal').addEventListener('click', (event) => {
-    if (event.target === event.currentTarget) {
-        $('#ai-modal').style.display = 'none';
-    }
-});
-
-document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && $('#ai-modal').style.display !== 'none') {
-        $('#ai-modal').style.display = 'none';
-    }
-});
-
 async function refreshAllData() {
     await Promise.all([
         checkStatus(),
         loadAnomalies(),
-        loadAnalyses(),
         loadUpcoming(),
     ]);
 }

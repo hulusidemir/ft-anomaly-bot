@@ -1,11 +1,8 @@
-"""
-Telegram message sender and Gemini API client.
-Uses direct HTTP calls — no heavy SDK dependencies.
-"""
+"""Telegram message formatting and delivery."""
 
 import logging
 import aiohttp
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_CHAT_IDS, GEMINI_API_KEY, GEMINI_URL
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -149,81 +146,3 @@ def format_anomaly_message(
     lines.append(f"  Kırmızı Kart: {rch} - {rca}")
 
     return "\n".join(lines)
-
-
-async def ask_gemini(prompt: str) -> str | None:
-    """Send a prompt to Google Gemini and return the response text."""
-    if not GEMINI_API_KEY:
-        logger.warning("Gemini API key not configured")
-        return None
-
-    url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 4096,
-        },
-    }
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=60)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            return parts[0].get("text", "")
-                    return None
-                else:
-                    body = await resp.text()
-                    logger.error(f"Gemini API error {resp.status}: {body[:500]}")
-                    return None
-    except Exception as e:
-        logger.error(f"Gemini request failed: {e}")
-        return None
-
-
-def build_gemini_prompt(matches_text: str) -> str:
-    """Build the analysis prompt for Gemini.
-
-    Note: this model has no live web access; any "form", "injury" or
-    "league standing" claim is from pre-training memory and therefore
-    stale. The prompt forces the model to state its uncertainty explicitly
-    and to downgrade confidence when data is unavailable, so users do not
-    mistake hallucination for insight.
-    """
-    return f"""Sen 20+ yıllık deneyime sahip profesyonel bir futbol bahis analistisin.
-
-ÖNEMLİ VERİ UYARISI:
-- Gerçek zamanlı internet erişimin YOK. Takım formları, sakatlıklar,
-  lig sıralamaları hakkında sahip olduğun bilgiler eğitim kesim tarihine
-  ait ve GÜNCEL OLMAYABİLİR.
-- Bir takım/lig hakkında yeterli ve güncel bilgin yoksa, o maç için
-  "Yetersiz veri — yorum yok" de ve atla. UYDURMA.
-
-Aşağıdaki yaklaşan futbol maçlarını analiz et. Her seçtiğin maç için:
-
-1. Takımların son form durumu (eğer güvenilir bilgin varsa).
-2. Motivasyon: şampiyonluk, düşme hattı, Avrupa kupası yarışı etkisi.
-3. Olası sakatlık/cezalı etkisi (eğer bilgin varsa; yoksa belirtme).
-4. "Tuzak" maçları tespit et ve önerilerin dışında tut.
-5. Kesinlikle yüksek güven duymadığın hiçbir maçı ÖNERME.
-
-ÇIKTI KURALLARI:
-- Sadece YÜKSEK veya ÇOK YÜKSEK güvenli maçlar.
-- Her önerilen maç için:
-    * Tahmin (1X2, 2.5 Üst/Alt, KG Var/Yok vb.)
-    * Güven seviyesi (Yüksek / Çok Yüksek)
-    * 2-3 cümle gerekçe
-    * Gerekçede varsayım varsa açıkça belirt ("bilinen son form itibarıyla...")
-- Telegram için temiz biçim (uygun emoji). Türkçe yaz.
-- Güvenli hiçbir öneri yoksa: "Bugün güvenli önerilecek maç bulunmuyor." de.
-
-BUGÜNÜN MAÇLARI:
-{matches_text}
-
-Profesyonel analizini paylaş:"""

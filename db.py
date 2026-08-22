@@ -47,13 +47,10 @@ async def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_anomaly_match_score
             ON anomalies(match_id, condition_type, score_home, score_away);
 
-        CREATE TABLE IF NOT EXISTS upcoming_analyses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            analysis_text TEXT NOT NULL,
-            match_count INTEGER DEFAULT 0,
-            run_type TEXT DEFAULT 'morning',
-            status TEXT DEFAULT 'new',
-            created_at TEXT DEFAULT (datetime('now'))
+        CREATE TABLE IF NOT EXISTS anomaly_match_actions (
+            match_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'new',
+            updated_at TEXT DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS upcoming_matches (
@@ -73,6 +70,22 @@ async def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_upcoming_event
             ON upcoming_matches(event_id, scan_date);
     """)
+    await db.commit()
+    # Gemini analysis was removed; discard its obsolete local cache table.
+    await db.execute("DROP TABLE IF EXISTS upcoming_analyses")
+    await db.commit()
+    # Preserve the latest existing row state as the match-wide state when
+    # upgrading databases created before match actions were introduced.
+    await db.execute(
+        """INSERT OR IGNORE INTO anomaly_match_actions (match_id, status)
+           SELECT a.match_id, a.status
+           FROM anomalies AS a
+           JOIN (
+               SELECT match_id, MAX(id) AS latest_id
+               FROM anomalies
+               GROUP BY match_id
+           ) AS latest ON latest.latest_id = a.id"""
+    )
     await db.commit()
 
     # Migration: add alert_number column & update index for existing databases
@@ -203,16 +216,23 @@ async def insert_anomaly(
         alert_number = count + 1
 
         cursor = await db.execute(
+            "SELECT status FROM anomaly_match_actions WHERE match_id = ?",
+            (match_id,),
+        )
+        saved_action = await cursor.fetchone()
+        status = saved_action["status"] if saved_action else "new"
+
+        cursor = await db.execute(
             """INSERT INTO anomalies
                (match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type, triggered_rules, stats_snapshot,
-                alert_number, detected_at_tr, dominant_side)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                alert_number, detected_at_tr, dominant_side, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 match_id, home_team, away_team, score_home, score_away,
                 minute, league, condition_type,
                 json.dumps(triggered_rules), json.dumps(stats_snapshot),
-                alert_number, turkey_now_str(), dominant_side,
+                alert_number, turkey_now_str(), dominant_side, status,
             ),
         )
         await db.commit()
@@ -338,24 +358,54 @@ async def finalize_match_anomalies(
     return len(rows)
 
 
-async def update_anomaly_status(anomaly_id: int, status: str):
-    db = await get_db()
-    await db.execute(
-        "UPDATE anomalies SET status = ? WHERE id = ? AND deleted_at IS NULL",
-        (status, anomaly_id),
+async def _set_match_statuses(db: aiosqlite.Connection, match_ids: list[str], status: str) -> int:
+    """Persist and apply a state to every active signal of the given matches."""
+    if not match_ids:
+        return 0
+    unique_match_ids = list(dict.fromkeys(match_ids))
+    await db.executemany(
+        """INSERT INTO anomaly_match_actions (match_id, status, updated_at)
+           VALUES (?, ?, datetime('now'))
+           ON CONFLICT(match_id) DO UPDATE SET
+             status=excluded.status,
+             updated_at=excluded.updated_at""",
+        [(match_id, status) for match_id in unique_match_ids],
     )
+    placeholders = ",".join("?" for _ in unique_match_ids)
+    cursor = await db.execute(
+        f"UPDATE anomalies SET status = ? "
+        f"WHERE match_id IN ({placeholders}) AND deleted_at IS NULL",
+        [status] + unique_match_ids,
+    )
+    return cursor.rowcount
+
+
+async def update_anomaly_status(anomaly_id: int, status: str) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT match_id FROM anomalies WHERE id = ? AND deleted_at IS NULL",
+        (anomaly_id,),
+    )
+    row = await cursor.fetchone()
+    updated = await _set_match_statuses(db, [row["match_id"]], status) if row else 0
     await db.commit()
+    return updated
 
 
-async def bulk_update_anomaly_status(ids: list[int], status: str):
+async def bulk_update_anomaly_status(ids: list[int], status: str) -> int:
+    if not ids:
+        return 0
     db = await get_db()
     placeholders = ",".join("?" for _ in ids)
-    await db.execute(
-        f"UPDATE anomalies SET status = ? "
+    cursor = await db.execute(
+        f"SELECT DISTINCT match_id FROM anomalies "
         f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
-        [status] + ids,
+        ids,
     )
+    match_ids = [str(row["match_id"]) for row in await cursor.fetchall()]
+    updated = await _set_match_statuses(db, match_ids, status)
     await db.commit()
+    return updated
 
 
 async def soft_delete_anomalies(ids: list[int]):
@@ -431,47 +481,11 @@ async def mark_notified(anomaly_id: int):
     await db.commit()
 
 
-# ---- Upcoming Analyses CRUD ----
-
-async def insert_analysis(text: str, match_count: int, run_type: str) -> int:
-    db = await get_db()
-    cursor = await db.execute(
-        "INSERT INTO upcoming_analyses (analysis_text, match_count, run_type) VALUES (?, ?, ?)",
-        (text, match_count, run_type),
-    )
-    await db.commit()
-    return cursor.lastrowid
-
-
-async def get_analyses(limit: int = 50):
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT * FROM upcoming_analyses ORDER BY created_at DESC LIMIT ?", (limit,)
-    )
-    rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
-
-
-async def delete_analyses(ids: list[int]):
-    db = await get_db()
-    placeholders = ",".join("?" for _ in ids)
-    await db.execute(
-        f"DELETE FROM upcoming_analyses WHERE id IN ({placeholders})", ids
-    )
-    await db.commit()
-
-
-async def clear_analyses():
-    db = await get_db()
-    await db.execute("DELETE FROM upcoming_analyses")
-    await db.commit()
-
-
 async def clear_database():
     db = await get_db()
     await db.executescript("""
         DELETE FROM anomalies;
-        DELETE FROM upcoming_analyses;
+        DELETE FROM anomaly_match_actions;
         DELETE FROM upcoming_matches;
     """)
     await db.commit()

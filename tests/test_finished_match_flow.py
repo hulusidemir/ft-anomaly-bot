@@ -121,6 +121,48 @@ class FinishedMatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["evaluated"], 0)
         self.assertEqual(summary["success_rate"], 0.0)
 
+    async def test_match_action_updates_existing_and_future_signals(self):
+        first_id = await self._insert_home_signal("300")
+        second_id, is_new, alert_number = await db.insert_anomaly(
+            match_id="300",
+            home_team="Home",
+            away_team="Away",
+            score_home=1,
+            score_away=0,
+            minute=63,
+            league="League",
+            condition_type="B",
+            triggered_rules=["away pressure"],
+            stats_snapshot={},
+        )
+        self.assertTrue(is_new)
+        self.assertEqual(alert_number, 2)
+
+        updated = await db.update_anomaly_status(first_id, "ignored")
+
+        self.assertEqual(updated, 2)
+        rows = await db.get_anomalies()
+        self.assertEqual({row["status"] for row in rows}, {"ignored"})
+
+        third_id, is_new, alert_number = await db.insert_anomaly(
+            match_id="300",
+            home_team="Home",
+            away_team="Away",
+            score_home=1,
+            score_away=1,
+            minute=71,
+            league="League",
+            condition_type="A",
+            triggered_rules=["home pressure"],
+            stats_snapshot=HOME_DOMINANT_STATS,
+        )
+        self.assertTrue(is_new)
+        self.assertIsNotNone(third_id)
+        self.assertEqual(alert_number, 3)
+        rows = await db.get_anomalies()
+        self.assertEqual({row["status"] for row in rows}, {"ignored"})
+        self.assertEqual({row["alert_number"] for row in rows}, {1, 2, 3})
+
 
 class FinishedMatchWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_only_finalizes_finished_events(self):

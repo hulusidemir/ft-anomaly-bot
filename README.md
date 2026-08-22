@@ -3,7 +3,6 @@
 A lightweight football anomaly detection platform with:
 
 - Anomaly scanner worker (30-85 minute window)
-- Upcoming matches analysis worker (Gemini)
 - Telegram notifications
 - Modern web dashboard
 - SQLite persistence
@@ -30,20 +29,6 @@ Runs once at startup and then every 30 minutes. It checks every pending signal
 match, archives finished matches, stores the final score, and grades a win bet
 on the signal's superior team. Draws count as failed win bets.
 
-### Worker 3: Upcoming Match Analysis
-
-Runs at:
-
-- 07:00 Europe/Istanbul
-- 19:00 Europe/Istanbul
-
-Flow:
-
-1. Scrapes today's scheduled football matches
-2. Sends a structured prompt to Gemini Flash model
-3. Saves analysis to SQLite
-4. Sends analysis to Telegram
-
 ### Web Dashboard
 
 - Turkish UI
@@ -55,6 +40,9 @@ Flow:
   - Gozardi Et (ignored)
   - Takip Et (following)
 - Persistent row state in SQLite
+- Match-wide actions: every current and future signal inherits the match state
+- Clickable `2. sinyal`, `3. sinyal`, etc. labels for match-only filtering
+- Manual upcoming-fixture refresh (no scheduled AI analysis or Telegram report)
 - Signal-level success/failure grading with a success-rate summary
 - Finished-score, superior-team, and result filters in the archive
 
@@ -96,7 +84,6 @@ Copy `.env.example` to `.env` and fill values:
 ```env
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
-GEMINI_API_KEY=
 DATABASE_PATH=data/anomaly_bot.db
 SCAN_INTERVAL_SECONDS=120
 FINISHED_SCAN_INTERVAL_MINUTES=30
@@ -122,12 +109,24 @@ Dashboard:
 
 - http://localhost:8080
 
+## systemd
+
+The included `ft-anomaly-bot.service` runs the application from the local
+`venv`, restarts it after failures, and starts it automatically at boot:
+
+```bash
+sudo install -m 0644 ft-anomaly-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ft-anomaly-bot.service
+```
+
+Check it with `systemctl status ft-anomaly-bot.service` and follow logs with
+`journalctl -u ft-anomaly-bot.service -f`.
+
 ## Scheduler Jobs
 
 - `anomaly_scan`: interval job, every `SCAN_INTERVAL_SECONDS`
 - `finished_match_scan`: interval job, every 30 minutes by default
-- `upcoming_morning`: daily at 07:00 Europe/Istanbul
-- `upcoming_evening`: daily at 19:00 Europe/Istanbul
 
 ## API Endpoints
 
@@ -138,8 +137,7 @@ Dashboard:
 - `POST /api/anomalies/bulk-status`
 - `POST /api/anomalies/delete`
 - `GET /api/anomalies/deleted?result=successful|failed|pending|unresolved`
-- `GET /api/analyses`
-- `POST /api/analyses/delete`
+- `POST /api/trigger/upcoming-scan` (manual fixture refresh only)
 
 ## Notes
 

@@ -25,6 +25,14 @@ class LiveSectionsRemovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('data-tab="live2"', dashboard)
         self.assertNotIn('data-tab="detections"', dashboard)
 
+    def test_gemini_analysis_ui_and_routes_are_removed(self):
+        paths = {route.path for route in app.routes}
+        dashboard = Path("templates/dashboard.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("/api/analyses", paths)
+        self.assertNotIn('data-tab="analyses"', dashboard)
+        self.assertNotIn("btn-ai-analysis", dashboard)
+
     async def test_init_removes_legacy_live_action_table(self):
         previous_path = db.DATABASE_PATH
         previous_db = db._db

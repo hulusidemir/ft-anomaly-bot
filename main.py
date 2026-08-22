@@ -23,12 +23,11 @@ from db import (
     soft_delete_anomalies, soft_delete_all_anomalies,
     restore_anomalies, get_deleted_anomalies, purge_deleted_anomalies,
     get_deleted_anomaly_summary,
-    get_analyses, delete_analyses, clear_analyses,
     get_upcoming_matches_db, update_upcoming_match_status,
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
     clear_database,
 )
-from workers import anomaly_scan, upcoming_scan, finished_match_scan
+from workers import anomaly_scan, refresh_upcoming_matches, finished_match_scan
 from scraper import scraper
 from notifier import send_telegram
 
@@ -69,33 +68,10 @@ async def lifespan(app: FastAPI):
         next_run_time=datetime.now(config.TZ_TURKEY),
     )
 
-    # Worker 3: upcoming analysis at 07:00 and 19:00 Turkey time
-    scheduler.add_job(
-        upcoming_scan,
-        "cron",
-        hour=7,
-        minute=0,
-        timezone="Europe/Istanbul",
-        args=["morning"],
-        id="upcoming_morning",
-        max_instances=1,
-    )
-    scheduler.add_job(
-        upcoming_scan,
-        "cron",
-        hour=19,
-        minute=0,
-        timezone="Europe/Istanbul",
-        args=["evening"],
-        id="upcoming_evening",
-        max_instances=1,
-    )
-
     scheduler.start()
     logger.info(
         f"Scheduler started — anomaly scan every {config.SCAN_INTERVAL_SECONDS}s, "
-        f"finished-match scan every {config.FINISHED_SCAN_INTERVAL_MINUTES}m, "
-        f"upcoming at 07:00/19:00 Istanbul"
+        f"finished-match scan every {config.FINISHED_SCAN_INTERVAL_MINUTES}m"
     )
 
     # Startup notification
@@ -103,7 +79,6 @@ async def lifespan(app: FastAPI):
         "✅ <b>Anomali Bot başlatıldı!</b>\n\n"
         f"⏱ Anomali taraması: her {config.SCAN_INTERVAL_SECONDS} saniye\n"
         f"🏁 Biten maç kontrolü: her {config.FINISHED_SCAN_INTERVAL_MINUTES} dakika\n"
-        "📅 Maç analizi: 07:00 / 19:00 (İstanbul)\n"
         f"🌐 Dashboard: http://{config.HOST}:{config.PORT}"
     )
 
@@ -161,8 +136,8 @@ async def api_update_status(anomaly_id: int, request: Request):
     status = body.get("status")
     if status not in ("new", "bet_placed", "ignored", "following"):
         return JSONResponse({"error": "Invalid status"}, status_code=400)
-    await update_anomaly_status(anomaly_id, status)
-    return {"ok": True}
+    updated = await update_anomaly_status(anomaly_id, status)
+    return {"ok": True, "updated": updated}
 
 
 @app.post("/api/anomalies/bulk-status")
@@ -172,8 +147,8 @@ async def api_bulk_status(request: Request):
     status = body.get("status")
     if not ids or status not in ("new", "bet_placed", "ignored", "following"):
         return JSONResponse({"error": "Invalid request"}, status_code=400)
-    await bulk_update_anomaly_status(ids, status)
-    return {"ok": True}
+    updated = await bulk_update_anomaly_status(ids, status)
+    return {"ok": True, "updated": updated}
 
 
 @app.post("/api/anomalies/delete")
@@ -232,27 +207,6 @@ async def api_purge_anomalies(request: Request):
 async def api_purge_all_anomalies():
     """Permanently delete everything currently in the trash."""
     await purge_deleted_anomalies()
-    return {"ok": True}
-
-
-@app.get("/api/analyses")
-async def api_analyses():
-    return await get_analyses()
-
-
-@app.post("/api/analyses/delete")
-async def api_delete_analyses(request: Request):
-    body = await request.json()
-    ids = body.get("ids", [])
-    if not ids:
-        return JSONResponse({"error": "No ids provided"}, status_code=400)
-    await delete_analyses(ids)
-    return {"ok": True}
-
-
-@app.post("/api/analyses/clear")
-async def api_clear_analyses():
-    await clear_analyses()
     return {"ok": True}
 
 
@@ -367,7 +321,7 @@ async def api_anomaly_match_details(event_id: str):
 
 @app.post("/api/trigger/upcoming-scan")
 async def trigger_upcoming_scan():
-    result = await upcoming_scan("manual", analyze=False)
+    result = await refresh_upcoming_matches()
     if not result.get("ok"):
         status_code = 409 if result.get("busy") else 502
         return JSONResponse(

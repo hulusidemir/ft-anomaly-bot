@@ -1,23 +1,22 @@
 """
 Background workers:
   1. Anomaly scanner — runs every SCAN_INTERVAL_SECONDS
-  2. Upcoming match analyzer — runs twice daily at 07:00 and 19:00 Turkey time
+  2. Finished-match scanner — grades completed signal matches
+
+Upcoming fixtures can still be refreshed manually from the dashboard. They are
+not scheduled, analyzed by an AI model, or sent to Telegram.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timedelta
 
-from scraper import scraper, UpcomingMatch
-from collections import defaultdict
+from scraper import scraper
 from detector import detect_anomalies
 from config import TZ_TURKEY
-from notifier import (
-    send_telegram, format_anomaly_message,
-    ask_gemini, build_gemini_prompt,
-)
+from notifier import send_telegram, format_anomaly_message
 from db import (
-    insert_anomaly, mark_notified, insert_analysis,
+    insert_anomaly, mark_notified,
     upsert_upcoming_matches, mark_upcoming_anomaly,
     get_pending_anomaly_match_ids, finalize_match_anomalies,
 )
@@ -190,22 +189,19 @@ async def finished_match_scan() -> dict:
             return {"ok": False, "error": str(exc), "checked": 0, "archived": 0}
 
 
-async def upcoming_scan(run_type: str = "morning", analyze: bool = True) -> dict:
-    """Fetch and store upcoming matches, optionally running the daily analysis."""
+async def refresh_upcoming_matches() -> dict:
+    """Fetch and store upcoming matches after an explicit dashboard request."""
     if _upcoming_lock.locked():
         logger.debug("Upcoming scan already running, skipping")
         return {"ok": False, "busy": True, "error": "Upcoming scan already running"}
 
     async with _upcoming_lock:
-        action = "analysis" if analyze else "refresh"
-        logger.info(f"Starting upcoming match {action} ({run_type})...")
+        logger.info("Starting manual upcoming match refresh...")
         try:
             matches = await scraper.get_upcoming_matches()
             logger.info(f"Found {len(matches)} upcoming matches")
 
             if not matches:
-                if analyze:
-                    await send_telegram("📋 Bugün için yaklaşan maç bulunamadı.")
                 fetch_error = scraper.last_fetch_error or {}
                 return {
                     "ok": not bool(fetch_error),
@@ -230,101 +226,8 @@ async def upcoming_scan(run_type: str = "morning", analyze: bool = True) -> dict
             inserted = await upsert_upcoming_matches(match_dicts, scan_date)
             logger.info(f"Saved {inserted} new upcoming matches to DB")
 
-            result = {"ok": True, "count": len(matches), "saved": inserted}
-            if not analyze:
-                return result
-
-            # ── 1. Send formatted match list to Telegram ──
-            match_list_msg = _format_match_list(matches, run_type)
-            list_msg_id = await send_telegram(match_list_msg)
-
-            if not list_msg_id:
-                logger.error("Failed to send match list to Telegram")
-
-            # ── 2. Build prompt & ask Gemini ──
-            match_lines = []
-            for m in matches:
-                t = _fmt_time_utc3(m.start_time)
-                line = f"• {m.league}: {m.home_team} - {m.away_team} (Başlangıç: {t})"
-                if m.round_info:
-                    line += f" [{m.round_info}]"
-                match_lines.append(line)
-
-            matches_text = "\n".join(match_lines)
-            prompt = build_gemini_prompt(matches_text)
-
-            analysis = await ask_gemini(prompt)
-
-            if not analysis:
-                logger.error("Gemini returned no analysis")
-                await send_telegram(
-                    "⚠️ Yaklaşan maçlar için Gemini analizi alınamadı.",
-                    reply_to_message_id=list_msg_id,
-                )
-                return {**result, "analyzed": False}
-
-            # Save to database
-            await insert_analysis(
-                text=analysis,
-                match_count=len(matches),
-                run_type=run_type,
-            )
-
-            # ── 3. Send Gemini analysis as reply to match list ──
-            header = (
-                f"🔮 <b>Maç Analizi — "
-                f"{'Sabah' if run_type == 'morning' else 'Akşam'} Raporu</b>\n"
-                f"📅 {datetime.now(TZ_TURKEY).strftime('%Y-%m-%d')}\n"
-                f"📊 {len(matches)} maç analiz edildi\n\n"
-            )
-            await send_telegram(
-                header + analysis,
-                reply_to_message_id=list_msg_id,
-            )
-            logger.info("Upcoming analysis sent successfully")
-            return {**result, "analyzed": True}
+            return {"ok": True, "count": len(matches), "saved": inserted}
 
         except Exception as e:
-            logger.error(f"Upcoming scan error: {e}", exc_info=True)
+            logger.error(f"Upcoming refresh error: {e}", exc_info=True)
             return {"ok": False, "error": str(e)}
-
-
-def _fmt_time_utc3(ts_str: str) -> str:
-    """Convert start_time (Unix ts string) to HH:MM UTC+3."""
-    try:
-        ts = int(ts_str)
-        if ts > 0:
-            return datetime.fromtimestamp(ts, tz=TZ_TURKEY).strftime("%H:%M")
-    except (ValueError, OSError):
-        pass
-    return "TBD"
-
-
-def _format_match_list(matches: list[UpcomingMatch], run_type: str) -> str:
-    """Format upcoming matches grouped by country/league for Telegram."""
-    today = datetime.now(TZ_TURKEY).strftime("%Y-%m-%d")
-    period = "Sabah" if run_type == "morning" else "Akşam"
-
-    lines = [
-        f"⚽ <b>Günün Maç Programı — {period}</b>",
-        f"📅 {today}",
-        f"📊 Toplam <b>{len(matches)}</b> maç\n",
-    ]
-
-    # Group by league (league already contains "Country - League")
-    by_league: dict[str, list[UpcomingMatch]] = defaultdict(list)
-    for m in matches:
-        by_league[m.league].append(m)
-
-    # Sort leagues alphabetically
-    for league in sorted(by_league):
-        league_matches = by_league[league]
-        lines.append(f"🏆 <b>{league}</b>")
-        for m in sorted(league_matches, key=lambda x: x.start_time):
-            line = f"  ⏰ {_fmt_time_utc3(m.start_time)} — {m.home_team} vs {m.away_team}"
-            if m.round_info:
-                line += f"  <i>({m.round_info})</i>"
-            lines.append(line)
-        lines.append("")
-
-    return "\n".join(lines)

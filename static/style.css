@@ -134,9 +134,7 @@ select {
 .workspace-panel,
 .overview-card,
 .toolbar,
-.table-wrap,
-.analysis-card,
-.modal {
+.table-wrap {
     border: 1px solid var(--border);
     background: var(--panel);
     backdrop-filter: blur(20px);
@@ -761,8 +759,7 @@ input[type="checkbox"]:checked::before {
     border-color: rgba(247, 195, 95, 0.16);
 }
 
-.badge,
-.analysis-run {
+.badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -786,16 +783,26 @@ input[type="checkbox"]:checked::before {
     border: 1px solid rgba(247, 195, 95, 0.18);
 }
 
-.badge-alert {
-    color: #c9d5e5;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid var(--border-soft);
+.signal-filter {
+    width: fit-content;
+    padding: 3px 9px;
+    border: 1px solid rgba(255, 138, 91, 0.28);
+    border-radius: var(--radius-pill);
+    color: #ffdfd1;
+    background: rgba(255, 138, 91, 0.12);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: var(--transition);
 }
 
-.badge-alert-multi {
-    color: #ffdfd1;
-    background: rgba(255, 138, 91, 0.16);
-    border-color: rgba(255, 138, 91, 0.24);
+.signal-filter:hover,
+.signal-filter.active {
+    color: #08111f;
+    background: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(255, 138, 91, 0.14);
 }
 
 .badge-anomaly {
@@ -1002,58 +1009,6 @@ tbody tr.state-following.anomaly-row:hover td {
     font-size: 1rem;
 }
 
-.analyses-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 18px;
-}
-
-.analysis-card {
-    position: relative;
-    border-radius: 26px;
-    padding: 22px;
-    background:
-        linear-gradient(180deg, rgba(104, 181, 255, 0.08), transparent 38%),
-        var(--panel-soft);
-    transition: var(--transition);
-}
-
-.analysis-card:hover {
-    transform: translateY(-3px);
-    border-color: var(--border-strong);
-}
-
-.analysis-card .card-check {
-    position: absolute;
-    top: 22px;
-    right: 22px;
-}
-
-.analysis-card .card-header {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding-right: 30px;
-    margin-bottom: 16px;
-}
-
-.analysis-card .card-meta {
-    color: var(--text-muted);
-    font-size: 0.84rem;
-}
-
-.analysis-card .card-body {
-    color: var(--text-soft);
-    white-space: pre-wrap;
-    line-height: 1.8;
-}
-
-.analysis-run {
-    width: fit-content;
-    color: #08111f;
-    background: linear-gradient(135deg, var(--blue), #90ddff);
-}
-
 .toast {
     position: fixed;
     right: 24px;
@@ -1077,84 +1032,6 @@ tbody tr.state-following.anomaly-row:hover td {
 
 .toast.error {
     border-color: rgba(255, 106, 115, 0.28);
-}
-
-.modal-overlay {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    background: rgba(3, 8, 14, 0.78);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    z-index: 1200;
-    opacity: 0;
-    visibility: hidden;
-    transition: var(--transition);
-}
-
-.modal-overlay[style*="display: block"],
-.modal-overlay[style*="display: flex"] {
-    opacity: 1;
-    visibility: visible;
-}
-
-.modal {
-    display: flex;
-    flex-direction: column;
-    width: min(920px, 100%);
-    max-height: min(88vh, 900px);
-    border-radius: 28px;
-    overflow: hidden;
-    background:
-        linear-gradient(180deg, rgba(255, 138, 91, 0.08), transparent 28%),
-        var(--panel-strong);
-}
-
-.modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 22px 26px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.modal-header h2 {
-    font-size: 1.24rem;
-    letter-spacing: -0.03em;
-}
-
-.modal-close-btn {
-    width: 38px;
-    height: 38px;
-    border: 1px solid var(--border);
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--text);
-    font-size: 1.4rem;
-    cursor: pointer;
-}
-
-.modal-meta {
-    flex-shrink: 0;
-    padding: 18px 26px 0;
-    color: var(--accent);
-    line-height: 1.6;
-}
-
-.modal-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    padding: 20px 26px 28px;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-gutter: stable;
-    color: var(--text-soft);
-    white-space: pre-wrap;
-    line-height: 1.8;
 }
 
 .dashboard-shell-compact {
@@ -1489,15 +1366,6 @@ tbody tr.state-following.anomaly-row:hover td {
         padding: 22px 14px 40px;
     }
 
-    .modal-overlay {
-        padding: 12px;
-    }
-
-    .modal {
-        max-height: calc(100vh - 24px);
-        border-radius: 22px;
-    }
-
     .dashboard-shell-compact {
         padding-top: 14px;
     }
@@ -1570,10 +1438,6 @@ tbody tr.state-following.anomaly-row:hover td {
 
     .tab {
         white-space: nowrap;
-    }
-
-    .analyses-list {
-        grid-template-columns: 1fr;
     }
 
     .toast {
