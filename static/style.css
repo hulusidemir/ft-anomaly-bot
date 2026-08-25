@@ -844,6 +844,23 @@ input[type="checkbox"]:checked::before {
     color: var(--text-soft);
 }
 
+.rules-cell {
+    display: grid;
+    gap: 10px;
+}
+
+.rule-dominant-team {
+    width: fit-content;
+    padding: 5px 10px;
+    border: 1px solid rgba(49, 208, 164, 0.3);
+    border-radius: var(--radius-pill);
+    color: var(--success);
+    background: var(--success-bg);
+    font-size: 0.79rem;
+    font-weight: 800;
+    line-height: 1.25;
+}
+
 .rules-list li {
     position: relative;
     padding-left: 15px;

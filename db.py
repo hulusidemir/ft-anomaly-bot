@@ -265,25 +265,35 @@ async def get_deleted_anomalies(
     hide_unique: bool = False,
     limit: int = 500,
 ):
+    """Return archived signals, optionally keeping one latest signal per match.
+
+    ``hide_unique`` is kept as the public API name for backwards compatibility;
+    in the dashboard it means "hide duplicate signals".  The result filter is
+    deliberately applied before ranking so, for example, the successful view
+    can retain one successful signal for every match that has one.
+    """
     db = await get_db()
     clauses = ["deleted_at IS NOT NULL"]
     params: list = []
     if result_filter:
         clauses.append("result_status = ?")
         params.append(result_filter)
-    if hide_unique:
-        clauses.append("(match_signal_count > 1 OR match_max_alert_number > 1)")
     where = " AND ".join(clauses)
+    unique_clause = "WHERE match_row_number = 1" if hide_unique else ""
     cursor = await db.execute(
-        f"""WITH counted AS (
-                SELECT a.*,
+        f"""WITH filtered AS (
+                SELECT a.* FROM anomalies AS a WHERE {where}
+            ), ranked AS (
+                SELECT filtered.*,
                        COUNT(*) OVER (PARTITION BY match_id) AS match_signal_count,
-                       MAX(COALESCE(alert_number, 1)) OVER (PARTITION BY match_id)
-                           AS match_max_alert_number
-                FROM anomalies AS a
+                       ROW_NUMBER() OVER (
+                           PARTITION BY match_id
+                           ORDER BY COALESCE(alert_number, 1) DESC, id DESC
+                       ) AS match_row_number
+                FROM filtered
             )
-            SELECT * FROM counted
-            WHERE {where}
+            SELECT * FROM ranked
+            {unique_clause}
             ORDER BY deleted_at DESC LIMIT ?""",
         params + [limit],
     )
@@ -301,18 +311,20 @@ async def get_deleted_anomaly_summary(
     if result_filter:
         clauses.append("result_status = ?")
         params.append(result_filter)
-    if hide_unique:
-        clauses.append("(match_signal_count > 1 OR match_max_alert_number > 1)")
     where = " AND ".join(clauses)
+    unique_clause = "WHERE match_row_number = 1" if hide_unique else ""
     cursor = await db.execute(
-        f"""WITH counted AS (
-                SELECT a.*,
-                       COUNT(*) OVER (PARTITION BY match_id) AS match_signal_count,
-                       MAX(COALESCE(alert_number, 1)) OVER (PARTITION BY match_id)
-                           AS match_max_alert_number
-                FROM anomalies AS a
-            ), filtered AS (
-                SELECT * FROM counted WHERE {where}
+        f"""WITH filtered AS (
+                SELECT a.* FROM anomalies AS a WHERE {where}
+            ), ranked AS (
+                SELECT filtered.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY match_id
+                           ORDER BY COALESCE(alert_number, 1) DESC, id DESC
+                       ) AS match_row_number
+                FROM filtered
+            ), summarized AS (
+                SELECT * FROM ranked {unique_clause}
             )
             SELECT
                COUNT(*) AS total,
@@ -323,7 +335,7 @@ async def get_deleted_anomaly_summary(
                COUNT(DISTINCT CASE WHEN final_score_home IS NOT NULL
                                    AND final_score_away IS NOT NULL
                                    THEN match_id END) AS finished_matches
-           FROM filtered""",
+           FROM summarized""",
         params,
     )
     row = dict(await cursor.fetchone())

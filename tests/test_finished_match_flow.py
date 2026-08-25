@@ -185,20 +185,29 @@ class FinishedMatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
         filtered = await db.get_deleted_anomalies(hide_unique=True)
         summary = await db.get_deleted_anomaly_summary(hide_unique=True)
 
-        self.assertEqual({row["match_id"] for row in filtered}, {"500"})
+        self.assertEqual({row["match_id"] for row in filtered}, {"400", "500"})
         self.assertEqual(len(filtered), 2)
+        self.assertEqual(
+            [row["alert_number"] for row in filtered if row["match_id"] == "500"],
+            [2],
+        )
         self.assertEqual(summary["total"], 2)
         self.assertEqual(summary["successful"], 1)
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(summary["success_rate"], 50.0)
-        self.assertEqual(summary["finished_matches"], 1)
+        self.assertEqual(summary["finished_matches"], 2)
 
         successful_summary = await db.get_deleted_anomaly_summary(
             result_filter="successful",
             hide_unique=True,
         )
-        self.assertEqual(successful_summary["total"], 1)
-        self.assertEqual(successful_summary["successful"], 1)
+        successful_rows = await db.get_deleted_anomalies(
+            result_filter="successful",
+            hide_unique=True,
+        )
+        self.assertEqual({row["match_id"] for row in successful_rows}, {"400", "500"})
+        self.assertEqual(successful_summary["total"], 2)
+        self.assertEqual(successful_summary["successful"], 2)
         self.assertEqual(successful_summary["failed"], 0)
 
 

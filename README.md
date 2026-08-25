@@ -45,7 +45,7 @@ on the signal's superior team. Draws count as failed win bets.
 - Manual rolling 24-hour fixture refresh (no scheduled AI analysis or Telegram report)
 - Signal-level success/failure grading with a success-rate summary
 - Archive filters for successful, failed, pending, and unresolved signals
-- Optional unique-signal hiding with a filter-aware summary
+- Optional match-level deduplication with a filter-aware summary
 - Finished-score, superior-team, and result filters in the archive
 
 ## Tech Stack

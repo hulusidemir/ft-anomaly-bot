@@ -331,6 +331,12 @@ function renderAnomalies() {
     tbody.innerHTML = filtered.map((item) => {
         const rules = item.triggered_rules || [];
         const ruleHtml = rules.map((rule) => `<li>${escHtml(rule)}</li>`).join('');
+        const dominantTeam = item.dominant_side === 'home'
+            ? item.home_team
+            : (item.dominant_side === 'away' ? item.away_team : '');
+        const dominantHtml = dominantTeam
+            ? `<div class="rule-dominant-team">Üstün takım: ${escHtml(dominantTeam)}</div>`
+            : '';
         const stateClass = item.status !== 'new' ? `state-${item.status}` : '';
         const time = item.detected_at_tr
             ? formatTurkeyTimestamp(item.detected_at_tr)
@@ -367,7 +373,12 @@ function renderAnomalies() {
                 </div>
             </td>
             <td>${conditionBadge}</td>
-            <td><ul class="rules-list">${ruleHtml}</ul></td>
+            <td>
+                <div class="rules-cell">
+                    ${dominantHtml}
+                    <ul class="rules-list">${ruleHtml}</ul>
+                </div>
+            </td>
             <td><span class="time-pill">${time}</span></td>
             <td>
                 <div class="row-actions row-actions-icons">
@@ -962,6 +973,8 @@ async function loadDeletedAnomalies() {
 }
 
 function renderDeletedSummary() {
+    const uniqueMode = Boolean(($('#filter-deleted-hide-unique') || {}).checked);
+    setText('#deleted-summary-total-label', uniqueMode ? 'Toplam Tekil Maç' : 'Toplam Sinyal');
     setText('#deleted-summary-total', String(deletedSummary.total || 0));
     setText('#deleted-summary-evaluated', String(deletedSummary.evaluated || 0));
     setText('#deleted-summary-successful', String(deletedSummary.successful || 0));
