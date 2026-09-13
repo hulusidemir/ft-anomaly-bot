@@ -109,6 +109,7 @@ def format_anomaly_message(
     alert_tag = f"🔔 <b>{alert_number}. Uyarı</b>" if alert_number > 1 else "🔔 <b>1. Uyarı</b>"
 
     lines = [
+        "Sofascore",
         f"{alert_tag} — {cond_label} (Koşul {condition_type})",
         "",
         f"{emoji} <b>{home_team}</b> {score_home} - {score_away} <b>{away_team}</b>",

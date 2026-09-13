@@ -149,16 +149,21 @@ class SofascoreScraper:
     MIN_GAP_RANGE = (1.8, 3.6)
     # Re-warm session if older than this (seconds).
     WARMUP_TTL = 900
+    # If warm-up fails, let API requests proceed for a short period instead of
+    # making every concurrent caller retry the homepage request.
+    WARMUP_RETRY_COOLDOWN = 30
 
     def __init__(self):
         self._session: AsyncSession | None = None
         self._rate_lock = asyncio.Lock()
+        self._warm_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
         self._last_request_time = 0.0
         self._last_rotate_time = 0.0
         self._impersonate = random.choice(IMPERSONATE_TARGETS)
         self._accept_lang = random.choice(ACCEPT_LANGUAGES)
         self._session_warm_at = 0.0
+        self._session_warm_attempt_at = 0.0
         self._consecutive_bot_errors = 0
         self.last_fetch_error: dict | None = None
         self.last_live_fetch_error: dict | None = None
@@ -207,18 +212,35 @@ class SofascoreScraper:
         now = time.monotonic()
         if self._session_warm_at and (now - self._session_warm_at) < self.WARMUP_TTL:
             return
-        try:
-            sess = await self._get_session()
-            resp = await sess.get(SOFASCORE_WEB, timeout=15)
-            if resp.status_code in (200, 304):
-                self._session_warm_at = time.monotonic()
-                # Small human-like pause before issuing the first XHR
-                await asyncio.sleep(random.uniform(0.8, 2.0))
-                logger.debug("Session warmed (impersonate=%s)", self._impersonate)
-            else:
-                logger.warning(f"Warm-up unexpected status {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"Session warm-up failed: {e}")
+        if (
+            self._session_warm_attempt_at
+            and (now - self._session_warm_attempt_at) < self.WARMUP_RETRY_COOLDOWN
+        ):
+            return
+
+        async with self._warm_lock:
+            now = time.monotonic()
+            if self._session_warm_at and (now - self._session_warm_at) < self.WARMUP_TTL:
+                return
+            if (
+                self._session_warm_attempt_at
+                and (now - self._session_warm_attempt_at) < self.WARMUP_RETRY_COOLDOWN
+            ):
+                return
+
+            self._session_warm_attempt_at = now
+            try:
+                sess = await self._get_session()
+                resp = await sess.get(SOFASCORE_WEB, timeout=15)
+                if resp.status_code in (200, 304):
+                    self._session_warm_at = time.monotonic()
+                    # Small human-like pause before issuing the first XHR
+                    await asyncio.sleep(random.uniform(0.8, 2.0))
+                    logger.debug("Session warmed (impersonate=%s)", self._impersonate)
+                else:
+                    logger.warning(f"Warm-up unexpected status {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Session warm-up failed: {e}")
 
     async def _throttle(self) -> None:
         async with self._rate_lock:
@@ -251,6 +273,7 @@ class SofascoreScraper:
             self._impersonate = random.choice(others)
         self._accept_lang = random.choice(ACCEPT_LANGUAGES)
         self._session_warm_at = 0.0
+        self._session_warm_attempt_at = 0.0
         self._consecutive_bot_errors = 0
         logger.info("Rotated scraper session – new impersonate=%s", self._impersonate)
 

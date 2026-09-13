@@ -26,6 +26,43 @@ logger = logging.getLogger(__name__)
 _scan_lock = asyncio.Lock()
 _upcoming_lock = asyncio.Lock()
 _finished_match_lock = asyncio.Lock()
+_last_finished_match_report: dict | None = None
+
+# A result scan must never keep the manual trigger locked indefinitely.  This
+# is deliberately longer than one normal result batch, while still giving the
+# dashboard a predictable upper bound when Sofascore or DNS is unhealthy.
+FINISHED_MATCH_SCAN_TIMEOUT_SECONDS = 180
+
+
+async def _get_match_statistics_bounded(matches) -> list:
+    """Fetch stats without filling the scraper semaphore with every match.
+
+    Creating one task per live match used to leave result checks stuck behind
+    hundreds of statistics requests.  A small worker pool keeps only the
+    requests that can actually run in flight, so higher-priority result checks
+    can enter the shared scraper queue promptly.
+    """
+    results = [None] * len(matches)
+    next_index = 0
+
+    async def worker():
+        nonlocal next_index
+        while next_index < len(matches):
+            index = next_index
+            next_index += 1
+            try:
+                results[index] = await scraper.get_match_statistics(
+                    matches[index].event_id
+                )
+            except Exception as exc:
+                results[index] = exc
+
+    worker_count = min(
+        len(matches),
+        max(1, getattr(scraper, "MAX_CONCURRENT_REQUESTS", 2)),
+    )
+    await asyncio.gather(*(worker() for _ in range(worker_count)))
+    return results
 
 
 async def anomaly_scan():
@@ -58,11 +95,10 @@ async def anomaly_scan():
             if not eligible:
                 return
 
-            # Fetch stats concurrently (semaphore in scraper handles rate limiting)
-            stats_tasks = [
-                scraper.get_match_statistics(m.event_id) for m in eligible
-            ]
-            stats_results = await asyncio.gather(*stats_tasks, return_exceptions=True)
+            # Keep the number of queued requests bounded.  The scraper still
+            # applies its own rate limit, but it no longer has hundreds of
+            # live-stat requests waiting ahead of final-result checks.
+            stats_results = await _get_match_statistics_bounded(eligible)
 
             stats_ok = sum(1 for s in stats_results if s is not None and not isinstance(s, Exception))
             logger.info(f"Stats fetched: {stats_ok}/{len(eligible)} successful")
@@ -132,31 +168,63 @@ async def anomaly_scan():
 
 async def finished_match_scan() -> dict:
     """Check pending signal matches, grade finished ones, and archive them."""
+    global _last_finished_match_report
+
     if _finished_match_lock.locked():
-        logger.debug("Finished-match scan already running, skipping")
-        return {"ok": False, "busy": True, "checked": 0, "archived": 0}
+        logger.info("Finished-match scan already running; waiting for its result")
+        async with _finished_match_lock:
+            if _last_finished_match_report is not None:
+                return dict(_last_finished_match_report)
+        # The previous owner was cancelled before publishing a report.  Retry
+        # normally instead of surfacing a misleading permanent busy state.
+        return await finished_match_scan()
 
     async with _finished_match_lock:
         try:
             event_ids = await get_pending_anomaly_match_ids()
             if not event_ids:
                 logger.debug("No pending anomaly matches to finalize")
-                return {"ok": True, "checked": 0, "matches_finished": 0, "archived": 0}
+                report = {
+                    "ok": True,
+                    "checked": 0,
+                    "matches_finished": 0,
+                    "archived": 0,
+                }
+                _last_finished_match_report = report
+                return dict(report)
 
             logger.info("Checking %s anomaly matches for final results", len(event_ids))
-            results = await asyncio.gather(
-                *(scraper.get_match_result(event_id) for event_id in event_ids),
-                return_exceptions=True,
+            tasks = [
+                asyncio.create_task(scraper.get_match_result(event_id))
+                for event_id in event_ids
+            ]
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=FINISHED_MATCH_SCAN_TIMEOUT_SECONDS,
             )
+            if pending:
+                logger.warning(
+                    "Finished-match scan timed out after %ss; cancelling %s/%s result checks",
+                    FINISHED_MATCH_SCAN_TIMEOUT_SECONDS,
+                    len(pending),
+                    len(tasks),
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
 
             archived = 0
             matches_finished = 0
-            errors = 0
-            for event_id, result in zip(event_ids, results):
-                if isinstance(result, Exception):
+            errors = len(pending)
+            for event_id, task in zip(event_ids, tasks):
+                if task in pending:
+                    continue
+                try:
+                    result = task.result()
+                except Exception as exc:
                     errors += 1
                     logger.warning(
-                        "Result check failed for event %s: %s", event_id, result
+                        "Result check failed for event %s: %s", event_id, exc
                     )
                     continue
                 if (
@@ -175,16 +243,25 @@ async def finished_match_scan() -> dict:
                 "Finished-match scan complete: checked=%s finished=%s archived_signals=%s errors=%s",
                 len(event_ids), matches_finished, archived, errors,
             )
-            return {
+            report = {
                 "ok": True,
                 "checked": len(event_ids),
                 "matches_finished": matches_finished,
                 "archived": archived,
                 "errors": errors,
             }
+            _last_finished_match_report = report
+            return dict(report)
         except Exception as exc:
             logger.error("Finished-match scan error: %s", exc, exc_info=True)
-            return {"ok": False, "error": str(exc), "checked": 0, "archived": 0}
+            report = {
+                "ok": False,
+                "error": str(exc),
+                "checked": 0,
+                "archived": 0,
+            }
+            _last_finished_match_report = report
+            return dict(report)
 
 
 async def refresh_upcoming_matches() -> dict:

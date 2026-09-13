@@ -1,3 +1,4 @@
+import asyncio
 import os
 import tempfile
 import unittest
@@ -238,6 +239,37 @@ class FinishedMatchWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["matches_finished"], 1)
         self.assertEqual(report["archived"], 2)
         finalize.assert_awaited_once_with("1", 3, 1)
+
+    async def test_concurrent_trigger_waits_for_running_scan_result(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_result(event_id):
+            started.set()
+            await release.wait()
+            return MatchResult(event_id, True, 2, 0, "finished", "Ended")
+
+        with (
+            patch(
+                "workers.get_pending_anomaly_match_ids",
+                new=AsyncMock(return_value=["1"]),
+            ) as pending_ids,
+            patch("workers.scraper.get_match_result", side_effect=delayed_result),
+            patch(
+                "workers.finalize_match_anomalies", new=AsyncMock(return_value=1)
+            ),
+        ):
+            first = asyncio.create_task(finished_match_scan())
+            await started.wait()
+            second = asyncio.create_task(finished_match_scan())
+            await asyncio.sleep(0)
+            release.set()
+            first_report, second_report = await asyncio.gather(first, second)
+
+        self.assertEqual(first_report, second_report)
+        self.assertTrue(second_report["ok"])
+        self.assertNotIn("busy", second_report)
+        pending_ids.assert_awaited_once()
 
 
 if __name__ == "__main__":
