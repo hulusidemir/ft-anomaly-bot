@@ -18,16 +18,21 @@ Runs periodically and analyzes live football matches between minute 30 and 85.
 
 Detects anomalies using two rule groups:
 
-- Condition A (draw matches)
-- Condition B (exactly 1-goal difference)
+- Condition A (draw matches): at least two signal groups must support the same team. Shots on target require an absolute edge of `3 * scale`; chance quality requires an xG edge of 1.0 or a big-chance edge of 2. Sustained pressure uses `dangerous attacks / 10 + corners`, requiring an index of `8 * scale` and an advantage of `3 * scale`. Possession-supported volume and extreme shot volume share one vote.
+- Condition B (exactly 1-goal difference): the trailing team can supply the shot signal through the existing volume/accuracy rule **or** an xG edge of 1.5 / big-chance edge of 3. A leader with at least four yellow cards supplies a defensive-vulnerability signal. Red/yellow cards share one group; two groups are still required. Late-game damping remains for volume and dangerous attacks.
+
+`scale = clamp(minute / 60, 0.5, 1.4)`. Quality advantages use the fixed thresholds above. New draw signals persist the team selected by the detector for consistent result grading.
 
 When rules are triggered, it sends formatted Turkish Telegram alerts and stores results in SQLite.
 
 ### Worker 2: Finished Match Grading
 
-Runs once at startup and then every 30 minutes. It checks every pending signal
-match, archives finished matches, stores the final score, and grades a win bet
-on the signal's superior team. Draws count as failed win bets.
+Runs once at startup and then every 30 minutes. Each run checks up to 50 pending
+matches, prioritizing never-checked and least-recently-checked matches so an
+unavailable result cannot block the backlog. Completed results are saved as they
+arrive; the scan cancels remaining requests after its 180-second request budget.
+It archives finished matches, stores the final score, and grades a win bet on the
+signal's superior team. Draws count as failed win bets.
 
 ### Web Dashboard
 
@@ -35,6 +40,8 @@ on the signal's superior team. Draws count as failed win bets.
 - System status indicator (active/passive)
 - Anomaly table with filtering
 - Bulk selection and bulk actions
+- Anomaly shortcuts: `j` / `k` navigate, `x` toggles selection, `b` marks selected rows as Bahis Oynandı
+- Sticky team columns for horizontal scrolling on mobile
 - Row actions:
   - Bahis Oynandi (bet placed)
   - Gozardi Et (ignored)
@@ -145,9 +152,23 @@ Check it with `systemctl status ft-anomaly-bot.service` and follow logs with
 ## Notes
 
 - This app intentionally avoids heavy infrastructure (Redis/RabbitMQ/Postgres).
-- SQLite WAL mode is enabled for low overhead and acceptable concurrent behavior.
+- SQLite uses WAL, at most four short-lived connections, serialized local writes, `BEGIN IMMEDIATE`, and a 15-second busy timeout. Each operation closes its connection and rolls back unfinished work.
+- Match-details responses use a strict 400-entry LRU cache with a 45-second TTL; unused per-event locks are released automatically.
+- Scraper session rotation is serialized, ignores failures from retired sessions, and coalesces rotations within five seconds. Category fetch failures retain successful responses.
 - `curl_cffi` is used to improve reliability against anti-bot protections on data sources.
 
 ## Disclaimer
 
 Sports data source behavior can change over time (rate limits, anti-bot, endpoint changes). Keep scraper logic updated as needed.
+
+## Verification
+
+```bash
+venv/bin/python -m unittest discover -s tests -v
+node --check static/app.js
+```
+
+Tests cover transaction isolation/cancellation, concurrent insert deduplication,
+bounded fair result batches, worker timeouts, LRU eviction, session rotation,
+and detector thresholds. Schema changes, including the result-check timestamp,
+are applied automatically by `init_db()` on startup.

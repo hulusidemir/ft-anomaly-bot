@@ -42,17 +42,14 @@ class SignalEvaluatorTests(unittest.TestCase):
 class FinishedMatchDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.previous_path = db.DATABASE_PATH
-        self.previous_db = db._db
         handle, self.database_path = tempfile.mkstemp(suffix=".db")
         os.close(handle)
         db.DATABASE_PATH = self.database_path
-        db._db = None
         await db.init_db()
 
     async def asyncTearDown(self):
         await db.close_db()
         db.DATABASE_PATH = self.previous_path
-        db._db = self.previous_db
         os.unlink(self.database_path)
 
     async def _insert_home_signal(self, event_id="100"):

@@ -56,6 +56,8 @@ const anomalyDetailsInFlight = new Map();
 const expandedAnomalyRows = new Set();
 let activeAnomalyMatchFilter = null;
 
+let anomalyBulkInFlight = false;
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -355,7 +357,7 @@ function renderAnomalies() {
         return `
         <tr class="anomaly-row-main ${expandedClass} ${stateClass}" data-id="${item.id}">
             <td class="col-check"><input type="checkbox" class="chk-anomaly" data-id="${item.id}"></td>
-            <td>
+            <td class="col-match">
                 <div class="cell-stack">
                     <a class="match-link" href="${sofascoreEventUrl(item.match_id)}" target="_blank" rel="noopener noreferrer">
                         ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
@@ -399,24 +401,27 @@ function renderAnomalies() {
 
     expandedAnomalyRows.forEach((aid) => renderAnomalyDetails(aid));
 
-    $$('.chk-anomaly').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const id = Number(checkbox.dataset.id);
-            if (checkbox.checked) selectedAnomalies.add(id);
-            else selectedAnomalies.delete(id);
-            updateBulkButtons();
-        });
-    });
-    $$('.signal-filter').forEach((button) => {
-        button.addEventListener('click', () => {
-            const matchId = String(button.dataset.matchId);
-            const wasActive = activeAnomalyMatchFilter === matchId;
-            activeAnomalyMatchFilter = wasActive ? null : matchId;
-            renderAnomalies();
-            toast(wasActive ? 'Maç filtresi kaldırıldı' : 'Yalnızca bu maçın sinyalleri gösteriliyor');
-        });
-    });
 }
+
+// One listener survives every table rebuild, including checkbox clicks.
+$('#anomaly-body').addEventListener('click', (event) => {
+    const checkbox = event.target.closest('.chk-anomaly');
+    if (checkbox) {
+        const id = Number(checkbox.dataset.id);
+        if (checkbox.checked) selectedAnomalies.add(id);
+        else selectedAnomalies.delete(id);
+        updateBulkButtons();
+    }
+    const button = event.target.closest('.signal-filter');
+    if (button) {
+        const matchId = String(button.dataset.matchId);
+        const wasActive = activeAnomalyMatchFilter === matchId;
+        activeAnomalyMatchFilter = wasActive ? null : matchId;
+        renderAnomalies();
+        toast(wasActive ? 'Maç filtresi kaldırıldı' : 'Yalnızca bu maçın sinyalleri gösteriliyor');
+    }
+});
+
 
 async function setStatus(id, status) {
     const anomaly = anomalies.find((item) => item.id === id);
@@ -458,12 +463,17 @@ function updateBulkButtons() {
 }
 
 async function bulkStatus(status) {
-    const ids = [...selectedAnomalies];
-    const result = await apiPost(API.bulkStatus, { ids, status });
-    if (!result || !result.ok) return;
-
-    await loadAnomalies();
-    toast(`${result.updated || ids.length} sinyal güncellendi: ${statusLabel(status)}`);
+    if (anomalyBulkInFlight || !selectedAnomalies.size) return;
+    anomalyBulkInFlight = true;
+    try {
+        const ids = [...selectedAnomalies];
+        const result = await apiPost(API.bulkStatus, { ids, status });
+        if (!result || !result.ok) return;
+        await loadAnomalies();
+        toast(`${result.updated || ids.length} sinyal güncellendi: ${statusLabel(status)}`);
+    } finally {
+        anomalyBulkInFlight = false;
+    }
 }
 
 $('#select-all-anomalies').addEventListener('change', (event) => {
@@ -568,7 +578,7 @@ function renderUpcoming() {
         return `
         <tr class="${stateClass} ${anomalyClass}" data-id="${item.id}">
             <td class="col-check"><input type="checkbox" class="chk-upcoming" data-id="${item.id}"></td>
-            <td>
+            <td class="col-match">
                 <div class="cell-stack">
                     <a class="match-link" href="${sofascoreEventUrl(item.event_id)}" target="_blank" rel="noopener noreferrer">
                         ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
@@ -594,15 +604,18 @@ function renderUpcoming() {
         </tr>`;
     }).join('');
 
-    $$('.chk-upcoming').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const id = Number(checkbox.dataset.id);
-            if (checkbox.checked) selectedUpcoming.add(id);
-            else selectedUpcoming.delete(id);
-            updateUpcomingBulk();
-        });
-    });
+
 }
+
+$('#upcoming-body').addEventListener('click', (event) => {
+    const checkbox = event.target.closest('.chk-upcoming');
+    if (!checkbox) return;
+    const id = Number(checkbox.dataset.id);
+    if (checkbox.checked) selectedUpcoming.add(id);
+    else selectedUpcoming.delete(id);
+    updateUpcomingBulk();
+});
+
 
 async function copyUpcomingMatches() {
     const filtered = getVisibleUpcomingMatches();
@@ -1037,7 +1050,7 @@ function renderDeletedAnomalies() {
         return `
         <tr data-id="${item.id}">
             <td class="col-check"><input type="checkbox" class="chk-deleted" data-id="${item.id}"></td>
-            <td>
+            <td class="col-match">
                 <div class="cell-stack">
                     <a class="match-link" href="${sofascoreEventUrl(item.match_id)}" target="_blank" rel="noopener noreferrer">
                         ${escHtml(item.home_team)} vs ${escHtml(item.away_team)}
@@ -1066,15 +1079,18 @@ function renderDeletedAnomalies() {
         </tr>`;
     }).join('');
 
-    $$('.chk-deleted').forEach((checkbox) => {
-        checkbox.addEventListener('change', () => {
-            const id = Number(checkbox.dataset.id);
-            if (checkbox.checked) selectedDeleted.add(id);
-            else selectedDeleted.delete(id);
-            updateDeletedBulk();
-        });
-    });
+
 }
+
+$('#deleted-body').addEventListener('click', (event) => {
+    const checkbox = event.target.closest('.chk-deleted');
+    if (!checkbox) return;
+    const id = Number(checkbox.dataset.id);
+    if (checkbox.checked) selectedDeleted.add(id);
+    else selectedDeleted.delete(id);
+    updateDeletedBulk();
+});
+
 
 function updateDeletedBulk() {
     const count = selectedDeleted.size;

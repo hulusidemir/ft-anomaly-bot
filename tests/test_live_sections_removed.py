@@ -45,7 +45,6 @@ class LiveSectionsRemovalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_init_removes_legacy_live_action_table(self):
         previous_path = db.DATABASE_PATH
-        previous_db = db._db
         handle, database_path = tempfile.mkstemp(suffix=".db")
         os.close(handle)
         try:
@@ -57,7 +56,6 @@ class LiveSectionsRemovalTests(unittest.IsolatedAsyncioTestCase):
             connection.close()
 
             db.DATABASE_PATH = database_path
-            db._db = None
             await db.init_db()
 
             connection = sqlite3.connect(database_path)
@@ -70,7 +68,6 @@ class LiveSectionsRemovalTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await db.close_db()
             db.DATABASE_PATH = previous_path
-            db._db = previous_db
             os.unlink(database_path)
 
 

@@ -1,214 +1,251 @@
 <!DOCTYPE html>
 <html lang="tr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Futbol Anomali Kontrol Paneli</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link rel="stylesheet" href="/static/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0d16">
+  <title>Futbol Anomali Kontrol Paneli</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="page-shell">
-        <main class="dashboard-shell dashboard-shell-compact">
-            <header class="topbar-card">
-                <div class="brand-block">
-                    <div class="brand-mark">AB</div>
-                </div>
+  <div class="app-layout" id="appLayout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <a class="brand" href="/" aria-label="Ana sayfa">
+          <span>FT</span>
+          <div><strong>FT ANOMALY</strong><small>SIGNAL DESK</small></div>
+        </a>
+        <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Navigasyonu daralt" aria-expanded="true">‹</button>
+      </div>
 
-                <div class="topbar-meta">
-                    <span class="status-pill" id="status-pill" aria-label="Sistem durumu">
-                        <span id="status-indicator" class="status-dot"></span>
-                    </span>
-                    <span id="last-updated" class="visually-hidden">-</span>
-                    <span id="scheduler-count" class="visually-hidden">0</span>
-                </div>
+      <nav class="tabs" aria-label="Bölümler">
+        <span class="nav-label">KAYITLAR</span>
+        <button class="tab active" data-tab="anomalies" type="button"><i>◈</i><b>Anomaliler</b></button>
+        <button class="tab" data-tab="upcoming" type="button"><i>◷</i><b>Gelecek 24 Saat</b></button>
+        <button class="tab" data-tab="deleted" type="button"><i>⚑</i><b>Silinen Maçlar</b></button>
+      </nav>
 
-                <div class="topbar-actions">
-                    <button id="btn-trigger-finished-main" class="btn btn-secondary">Bitenleri Kontrol Et</button>
-                    <button id="btn-refresh-all" class="btn btn-secondary">Tümünü Yenile</button>
-                    <button id="btn-clear-database" class="btn btn-critical">VERİTABANINI TEMİZLE</button>
-                </div>
-            </header>
+      <div class="sidebar-bottom">
+        <div class="system-pill" id="status-pill" aria-label="Sistem durumu" title="Sistem durumu">
+          <i id="status-indicator" class="status-dot"></i>
+          <div>
+            <span id="last-updated">-</span>
+            <small>son güncelleme</small>
+          </div>
+          <span id="scheduler-count" class="visually-hidden">0</span>
+        </div>
+        <button class="sidebar-danger" id="btn-clear-database" type="button">Veritabanını Temizle</button>
+      </div>
+    </aside>
 
-            <section class="workspace-panel compact-panel">
-                <nav class="tabs">
-                    <button class="tab active" data-tab="anomalies">Anomaliler</button>
-                    <button class="tab" data-tab="upcoming">Gelecek 24 Saat</button>
-                    <button class="tab" data-tab="deleted">Silinen Maçlar</button>
-                </nav>
+    <main class="workspace">
+      <header class="workspace-head">
+        <div class="page-title">
+          <span class="page-kicker">FT · CANLI SİNYAL TAKİBİ</span>
+          <h1>Kontrol Paneli</h1>
+          <div class="scan-rule"><strong>20–80'</strong><i></i><strong>0 veya 1 gol fark</strong><i></i><span>60 sn anomali · 30 sn durum yenilemesi</span></div>
+        </div>
+        <div class="top-actions">
+          <button class="button" id="btn-refresh-all" type="button">Tümünü Yenile</button>
+          <button class="button button-finished" id="btn-trigger-finished-main" type="button" title="Biten maçların sonuçlarını kontrol eder ve sinyalleri arşivler">Bitenleri Kontrol Et</button>
+        </div>
+      </header>
 
-                <section id="tab-anomalies" class="tab-content active">
-                    <div class="toolbar">
-                        <div class="toolbar-left">
-                            <select id="filter-status" class="input-select">
-                                <option value="">Tüm Durumlar</option>
-                                <option value="new">Yeni</option>
-                                <option value="bet_placed">Bahis Oynandı</option>
-                                <option value="ignored">Gözardı Edildi</option>
-                                <option value="following">Takip Ediliyor</option>
-                            </select>
-                            <input type="text" id="search-anomalies" class="input-search" placeholder="Takım, lig veya koşul ara">
-                            <button id="btn-refresh" class="btn btn-secondary" title="Yenile">Listeyi Yenile</button>
-                        </div>
+      <section class="content-card">
 
-                        <div class="toolbar-right">
-                            <button id="btn-clear-all-anomalies" class="btn btn-ghost-danger">Anomali Geçmişini Sil</button>
-                            <span id="selected-count" class="selected-count">0 seçili</span>
-                            <button id="btn-bulk-bet" class="btn btn-action" disabled>Bahis Oynandı</button>
-                            <button id="btn-bulk-ignore" class="btn btn-action" disabled>Gözardı Et</button>
-                            <button id="btn-bulk-follow" class="btn btn-action" disabled>Takip Et</button>
-                            <button id="btn-bulk-delete" class="btn btn-danger" disabled>Seçilileri Sil</button>
-                        </div>
-                    </div>
+        <section id="tab-anomalies" class="tab-content active">
+          <div class="toolbar">
+            <div class="filters">
+              <label class="field-label"><span>Durum</span>
+                <select id="filter-status" aria-label="Duruma göre filtrele">
+                  <option value="">Tüm Durumlar</option>
+                  <option value="new">Yeni</option>
+                  <option value="bet_placed">Bahis Oynandı</option>
+                  <option value="ignored">Gözardı Edildi</option>
+                  <option value="following">Takip Ediliyor</option>
+                </select>
+              </label>
+              <label class="field-label search-field"><span>Arama</span>
+                <span class="search"><i>⌕</i><input type="text" id="search-anomalies" placeholder="Takım, lig veya koşul ara"></span>
+              </label>
+              <button class="button button-soft" id="btn-refresh" type="button">Listeyi yenile</button>
+            </div>
+            <div class="bulk-actions">
+              <button class="button ghost-danger" id="btn-clear-all-anomalies" type="button">Anomali Geçmişini Sil</button>
+              <span class="selection" id="selected-count">0 seçili</span>
+              <button class="button" id="btn-bulk-bet" type="button" disabled>Bahis</button>
+              <button class="button" id="btn-bulk-ignore" type="button" disabled>Gözardı</button>
+              <button class="button" id="btn-bulk-follow" type="button" disabled>Takip</button>
+              <button class="button danger" id="btn-bulk-delete" type="button" disabled>Sil</button>
+            </div>
+          </div>
 
-                    <div class="table-wrap">
-                        <table id="anomaly-table">
-                            <thead>
-                                <tr>
-                                    <th class="col-check"><input type="checkbox" id="select-all-anomalies"></th>
-                                    <th class="sortable" data-sort="match">Maç</th>
-                                    <th class="sortable" data-sort="score">Skor</th>
-                                    <th class="sortable" data-sort="minute">Dakika</th>
-                                    <th class="sortable" data-sort="league">Lig</th>
-                                    <th class="sortable" data-sort="condition">Koşul</th>
-                                    <th>Kurallar</th>
-                                    <th class="sortable" data-sort="time">Saat (TR)</th>
-                                    <th>İşlemler</th>
-                                </tr>
-                            </thead>
-                            <tbody id="anomaly-body">
-                                <tr><td colspan="9" class="empty-msg">Yükleniyor...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
+          <div class="table-wrap">
+            <table id="anomaly-table">
+              <thead>
+                <tr>
+                  <th class="col-check"><input type="checkbox" id="select-all-anomalies" aria-label="Tümünü seç"></th>
+                  <th class="sortable col-match" data-sort="match">Maç</th>
+                  <th class="sortable" data-sort="score">Skor</th>
+                  <th class="sortable" data-sort="minute">Dakika</th>
+                  <th class="sortable" data-sort="league">Lig</th>
+                  <th class="sortable" data-sort="condition">Koşul</th>
+                  <th>Kurallar</th>
+                  <th class="sortable" data-sort="time">Saat (TR)</th>
+                  <th>İşlemler</th>
+                </tr>
+              </thead>
+              <tbody id="anomaly-body">
+                <tr><td colspan="9" class="empty-msg">Yükleniyor...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-                <section id="tab-upcoming" class="tab-content">
-                    <div class="toolbar">
-                        <div class="toolbar-left">
-                            <select id="filter-upcoming-status" class="input-select">
-                                <option value="">Tüm Durumlar</option>
-                                <option value="new">Yeni</option>
-                                <option value="following">Takip Ediliyor</option>
-                                <option value="ignored">Gözardı Edildi</option>
-                            </select>
-                            <input type="text" id="search-upcoming" class="input-search" placeholder="Takım, lig veya tur ara">
-                            <button id="btn-refresh-upcoming" class="btn btn-secondary">Listeyi Yenile</button>
-                            <button id="btn-trigger-upcoming" class="btn btn-secondary" title="Şu andan itibaren gelecek 24 saatin maçlarını çek">Gelecek Maçları Çek</button>
-                            <button id="btn-copy-upcoming" class="btn btn-secondary" title="Görünen maçları saatleriyle kopyala">Maçları Kopyala</button>
-                        </div>
+        <section id="tab-upcoming" class="tab-content">
+          <div class="toolbar">
+            <div class="filters">
+              <label class="field-label"><span>Durum</span>
+                <select id="filter-upcoming-status" aria-label="Duruma göre filtrele">
+                  <option value="">Tüm Durumlar</option>
+                  <option value="new">Yeni</option>
+                  <option value="following">Takip Ediliyor</option>
+                  <option value="ignored">Gözardı Edildi</option>
+                </select>
+              </label>
+              <label class="field-label search-field"><span>Arama</span>
+                <span class="search"><i>⌕</i><input type="text" id="search-upcoming" placeholder="Takım, lig veya tur ara"></span>
+              </label>
+              <button class="button button-soft" id="btn-refresh-upcoming" type="button">Listeyi yenile</button>
+              <button class="button button-primary" id="btn-trigger-upcoming" type="button" title="Şu andan itibaren gelecek 24 saatin maçlarını çek">Gelecek Maçları Çek</button>
+              <button class="button button-soft" id="btn-copy-upcoming" type="button" title="Görünen maçları saatleriyle kopyala">Maçları Kopyala</button>
+            </div>
+            <div class="bulk-actions">
+              <button class="button ghost-danger" id="btn-clear-all-upcoming" type="button">Maç Kayıtlarını Sil</button>
+              <span class="selection" id="selected-count-upcoming">0 seçili</span>
+              <button class="button" id="btn-bulk-follow-upcoming" type="button" disabled>Takip</button>
+              <button class="button" id="btn-bulk-ignore-upcoming" type="button" disabled>Gözardı</button>
+              <button class="button danger" id="btn-bulk-delete-upcoming" type="button" disabled>Sil</button>
+            </div>
+          </div>
 
-                        <div class="toolbar-right">
-                            <button id="btn-clear-all-upcoming" class="btn btn-ghost-danger">Maç Kayıtlarını Sil</button>
-                            <span id="selected-count-upcoming" class="selected-count">0 seçili</span>
-                            <button id="btn-bulk-follow-upcoming" class="btn btn-action" disabled>Takip Et</button>
-                            <button id="btn-bulk-ignore-upcoming" class="btn btn-action" disabled>Gözardı Et</button>
-                            <button id="btn-bulk-delete-upcoming" class="btn btn-danger" disabled>Seçilileri Sil</button>
-                        </div>
-                    </div>
+          <div class="table-wrap">
+            <table id="upcoming-table">
+              <thead>
+                <tr>
+                  <th class="col-check"><input type="checkbox" id="select-all-upcoming" aria-label="Tümünü seç"></th>
+                  <th class="sortable col-match" data-sort="match">Maç</th>
+                  <th class="sortable" data-sort="start">Başlangıç</th>
+                  <th class="sortable" data-sort="league">Lig</th>
+                  <th class="sortable" data-sort="round">Tur</th>
+                  <th class="sortable" data-sort="status">Durum</th>
+                  <th>İşlemler</th>
+                </tr>
+              </thead>
+              <tbody id="upcoming-body">
+                <tr><td colspan="7" class="empty-msg">24 saatlik maç listesi henüz çekilmedi</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-                    <div class="table-wrap">
-                        <table id="upcoming-table">
-                            <thead>
-                                <tr>
-                                    <th class="col-check"><input type="checkbox" id="select-all-upcoming"></th>
-                                    <th class="sortable" data-sort="match">Maç</th>
-                                    <th class="sortable" data-sort="start">Başlangıç</th>
-                                    <th class="sortable" data-sort="league">Lig</th>
-                                    <th class="sortable" data-sort="round">Tur</th>
-                                    <th class="sortable" data-sort="status">Durum</th>
-                                    <th>İşlemler</th>
-                                </tr>
-                            </thead>
-                            <tbody id="upcoming-body">
-                                <tr><td colspan="7" class="empty-msg">24 saatlik maç listesi henüz çekilmedi</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
+        <section id="tab-deleted" class="tab-content">
+          <div class="result-summary-wrap" aria-label="Sinyal başarı özet tablosu">
+            <table class="result-summary-table">
+              <thead>
+                <tr>
+                  <th id="deleted-summary-total-label">Toplam Sinyal</th>
+                  <th>Değerlendirilen</th>
+                  <th>Başarılı</th>
+                  <th>Başarısız</th>
+                  <th>Başarı Oranı</th>
+                  <th>Sonuç Bekleyen</th>
+                  <th>Değerlendirilemedi</th>
+                  <th>Biten Maç</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td id="deleted-summary-total">0</td>
+                  <td id="deleted-summary-evaluated">0</td>
+                  <td id="deleted-summary-successful" class="summary-value-success">0</td>
+                  <td id="deleted-summary-failed" class="summary-value-failed">0</td>
+                  <td id="deleted-summary-rate" class="summary-value-success">%0</td>
+                  <td id="deleted-summary-pending" class="summary-value-pending">0</td>
+                  <td id="deleted-summary-unresolved" class="summary-value-pending">0</td>
+                  <td id="deleted-summary-matches">0</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
 
-                <section id="tab-deleted" class="tab-content">
-                    <div class="result-summary-wrap" aria-label="Sinyal başarı özet tablosu">
-                        <table class="result-summary-table">
-                            <thead>
-                                <tr>
-                                    <th id="deleted-summary-total-label">Toplam Sinyal</th>
-                                    <th>Değerlendirilen</th>
-                                    <th>Başarılı</th>
-                                    <th>Başarısız</th>
-                                    <th>Başarı Oranı</th>
-                                    <th>Sonuç Bekleyen</th>
-                                    <th>Değerlendirilemedi</th>
-                                    <th>Biten Maç</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td id="deleted-summary-total">0</td>
-                                    <td id="deleted-summary-evaluated">0</td>
-                                    <td id="deleted-summary-successful" class="summary-value-success">0</td>
-                                    <td id="deleted-summary-failed" class="summary-value-failed">0</td>
-                                    <td id="deleted-summary-rate" class="summary-value-success">%0</td>
-                                    <td id="deleted-summary-pending" class="summary-value-pending">0</td>
-                                    <td id="deleted-summary-unresolved" class="summary-value-pending">0</td>
-                                    <td id="deleted-summary-matches">0</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+          <div class="toolbar">
+            <div class="filters">
+              <label class="field-label"><span>Sonuç</span>
+                <select id="filter-deleted-result" aria-label="Sonuca göre filtrele">
+                  <option value="">Tüm Sonuçlar</option>
+                  <option value="successful">Başarılı Sinyaller</option>
+                  <option value="failed">Başarısız Sinyaller</option>
+                  <option value="pending">Sonuç Bekleyen Sinyaller</option>
+                  <option value="unresolved">Değerlendirilemeyen Sinyaller</option>
+                </select>
+              </label>
+              <label class="field-label check-field">
+                <span>Tekilleştir</span>
+                <input type="checkbox" id="filter-deleted-hide-unique">
+              </label>
+              <label class="field-label search-field"><span>Arama</span>
+                <span class="search"><i>⌕</i><input type="text" id="search-deleted" placeholder="Takım, lig veya koşul ara"></span>
+              </label>
+              <button class="button button-soft" id="btn-refresh-deleted" type="button">Listeyi yenile</button>
+              <button class="button button-finished" id="btn-trigger-finished" type="button">Sonuçları Kontrol Et</button>
+            </div>
+            <div class="bulk-actions">
+              <button class="button ghost-danger" id="btn-purge-all-deleted" type="button">Çöpü Kalıcı Boşalt</button>
+              <span class="selection" id="selected-count-deleted">0 seçili</span>
+              <button class="button" id="btn-bulk-restore-deleted" type="button" disabled>Geri Yükle</button>
+              <button class="button danger" id="btn-bulk-purge-deleted" type="button" disabled>Kalıcı Sil</button>
+            </div>
+          </div>
 
-                    <div class="toolbar">
-                        <div class="toolbar-left">
-                            <select id="filter-deleted-result" class="input-select">
-                                <option value="">Tüm Sonuçlar</option>
-                                <option value="successful">Başarılı Sinyaller</option>
-                                <option value="failed">Başarısız Sinyaller</option>
-                                <option value="pending">Sonuç Bekleyen Sinyaller</option>
-                                <option value="unresolved">Değerlendirilemeyen Sinyaller</option>
-                            </select>
-                            <label class="filter-check" for="filter-deleted-hide-unique">
-                                <input type="checkbox" id="filter-deleted-hide-unique">
-                                <span>Tekilleştir (tekrarları gizle)</span>
-                            </label>
-                            <input type="text" id="search-deleted" class="input-search" placeholder="Takım, lig veya koşul ara">
-                            <button id="btn-refresh-deleted" class="btn btn-secondary">Listeyi Yenile</button>
-                            <button id="btn-trigger-finished" class="btn btn-secondary">Sonuçları Kontrol Et</button>
-                        </div>
+          <div class="table-wrap">
+            <table id="deleted-table">
+              <thead>
+                <tr>
+                  <th class="col-check"><input type="checkbox" id="select-all-deleted" aria-label="Tümünü seç"></th>
+                  <th class="col-match">Maç</th>
+                  <th>Sinyal Skoru</th>
+                  <th>Maç Sonucu</th>
+                  <th>Üstün Takım</th>
+                  <th>Sinyal Sonucu</th>
+                  <th>Lig</th>
+                  <th>Koşul</th>
+                  <th>Tamamlanma</th>
+                  <th>İşlemler</th>
+                </tr>
+              </thead>
+              <tbody id="deleted-body">
+                <tr><td colspan="10" class="empty-msg">Yükleniyor...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-                        <div class="toolbar-right">
-                            <button id="btn-purge-all-deleted" class="btn btn-ghost-danger">Çöpü Kalıcı Boşalt</button>
-                            <span id="selected-count-deleted" class="selected-count">0 seçili</span>
-                            <button id="btn-bulk-restore-deleted" class="btn btn-action" disabled>Geri Yükle</button>
-                            <button id="btn-bulk-purge-deleted" class="btn btn-danger" disabled>Kalıcı Sil</button>
-                        </div>
-                    </div>
-
-                    <div class="table-wrap">
-                        <table id="deleted-table">
-                            <thead>
-                                <tr>
-                                    <th class="col-check"><input type="checkbox" id="select-all-deleted"></th>
-                                    <th>Maç</th>
-                                    <th>Sinyal Skoru</th>
-                                    <th>Maç Sonucu</th>
-                                    <th>Üstün Takım</th>
-                                    <th>Sinyal Sonucu</th>
-                                    <th>Lig</th>
-                                    <th>Koşul</th>
-                                    <th>Tamamlanma</th>
-                                    <th>İşlemler</th>
-                                </tr>
-                            </thead>
-                            <tbody id="deleted-body">
-                                <tr><td colspan="10" class="empty-msg">Yükleniyor...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
-            </section>
-        </main>
-    </div>
-
-    <script src="/static/app.js"></script>
+      </section>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+  <script>
+    (function () {
+      var layout = document.getElementById('appLayout');
+      var toggle = document.getElementById('sidebarToggle');
+      if (!layout || !toggle) return;
+      toggle.addEventListener('click', function () {
+        var collapsed = layout.classList.toggle('sidebar-collapsed');
+        toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      });
+    })();
+  </script>
 </body>
 </html>

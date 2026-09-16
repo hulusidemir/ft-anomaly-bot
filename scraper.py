@@ -155,11 +155,12 @@ class SofascoreScraper:
 
     def __init__(self):
         self._session: AsyncSession | None = None
+        self._rotate_lock = asyncio.Lock()
         self._rate_lock = asyncio.Lock()
         self._warm_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
         self._last_request_time = 0.0
-        self._last_rotate_time = 0.0
+        self._last_rotate_time: float | None = None
         self._impersonate = random.choice(IMPERSONATE_TARGETS)
         self._accept_lang = random.choice(ACCEPT_LANGUAGES)
         self._session_warm_at = 0.0
@@ -198,10 +199,11 @@ class SofascoreScraper:
         return hashlib.sha256(str(bucket).encode()).hexdigest()[:6]
 
     async def _get_session(self) -> AsyncSession:
-        if self._session is None:
-            self._session = self._build_session()
-            self._session_warm_at = 0.0
-        return self._session
+        async with self._rotate_lock:
+            if self._session is None:
+                self._session = self._build_session()
+                self._session_warm_at = 0.0
+            return self._session
 
     async def _warm_session(self) -> None:
         """Visit the Sofascore homepage once to bootstrap Cloudflare cookies.
@@ -232,7 +234,7 @@ class SofascoreScraper:
             try:
                 sess = await self._get_session()
                 resp = await sess.get(SOFASCORE_WEB, timeout=15)
-                if resp.status_code in (200, 304):
+                if resp.status_code in (200, 304) and sess is self._session:
                     self._session_warm_at = time.monotonic()
                     # Small human-like pause before issuing the first XHR
                     await asyncio.sleep(random.uniform(0.8, 2.0))
@@ -250,32 +252,31 @@ class SofascoreScraper:
                 await asyncio.sleep(min_delay - elapsed)
             self._last_request_time = time.monotonic()
 
-    async def _rotate_session(self) -> None:
-        """Drop the current session, pick a different impersonation, and force re-warm.
+    async def _rotate_session(self, failed_session: AsyncSession | None = None) -> None:
+        """Coalesce concurrent failures instead of queueing repeated rotations."""
+        async with self._rotate_lock:
+            if failed_session is not None and failed_session is not self._session:
+                return  # This response belongs to an already retired session.
+            now = time.monotonic()
+            if self._last_rotate_time is not None and now - self._last_rotate_time < 5:
+                return
 
-        Kept behind a 5s cool-down so a burst of errors doesn't rotate many
-        times in a row (which itself looks bot-like and depletes our IP budget).
-        """
-        elapsed = time.monotonic() - self._last_rotate_time
-        if elapsed < 5:
-            await asyncio.sleep(5 - elapsed)
-        self._last_rotate_time = time.monotonic()
-
-        if self._session is not None:
-            try:
-                await self._session.close()
-            except Exception:
-                pass
+            old_session = self._session
             self._session = None
-
-        others = [t for t in IMPERSONATE_TARGETS if t != self._impersonate]
-        if others:
-            self._impersonate = random.choice(others)
-        self._accept_lang = random.choice(ACCEPT_LANGUAGES)
-        self._session_warm_at = 0.0
-        self._session_warm_attempt_at = 0.0
-        self._consecutive_bot_errors = 0
-        logger.info("Rotated scraper session – new impersonate=%s", self._impersonate)
+            self._last_rotate_time = now
+            others = [t for t in IMPERSONATE_TARGETS if t != self._impersonate]
+            if others:
+                self._impersonate = random.choice(others)
+            self._accept_lang = random.choice(ACCEPT_LANGUAGES)
+            self._session_warm_at = 0.0
+            self._session_warm_attempt_at = 0.0
+            self._consecutive_bot_errors = 0
+            if old_session is not None:
+                try:
+                    await old_session.close()
+                except Exception:
+                    logger.debug("Retired session close failed", exc_info=True)
+            logger.info("Rotated scraper session – new impersonate=%s", self._impersonate)
 
     def _is_list_endpoint(self, url: str) -> bool:
         return any(marker in url for marker in LIST_ENDPOINTS)
@@ -298,6 +299,7 @@ class SofascoreScraper:
             await self._warm_session()
             async with self._semaphore:
                 await self._throttle()
+                session = None
                 try:
                     session = await self._get_session()
                     resp = await session.get(
@@ -313,7 +315,7 @@ class SofascoreScraper:
                     logger.warning(f"Request error on {url}: {e}")
                     if attempt + 1 >= retries:
                         break
-                    await self._rotate_session()
+                    await self._rotate_session(session)
                     await asyncio.sleep(2 * (attempt + 1) + random.uniform(0.5, 2.0))
                     continue
 
@@ -347,7 +349,7 @@ class SofascoreScraper:
                 logger.warning(f"Rate limited (429) on {url}, waiting {wait:.1f}s")
                 await asyncio.sleep(wait)
                 if attempt >= 1:
-                    await self._rotate_session()
+                    await self._rotate_session(session)
                 continue
 
             if status == 403:
@@ -362,7 +364,7 @@ class SofascoreScraper:
                     break
                 wait = (2 ** attempt) * 3 + random.uniform(3, 7)
                 logger.warning(f"Forbidden (403) on {url} – rotating session")
-                await self._rotate_session()
+                await self._rotate_session(session)
                 await asyncio.sleep(wait)
                 continue
 
@@ -386,7 +388,7 @@ class SofascoreScraper:
                         f"404 on list endpoint {url} – treating as bot-protection, "
                         f"rotating and retrying in {wait:.1f}s"
                     )
-                    await self._rotate_session()
+                    await self._rotate_session(session)
                     await asyncio.sleep(wait)
                     continue
 
@@ -401,7 +403,7 @@ class SofascoreScraper:
                         f"404 on {url} during 404-burst (count={self._consecutive_bot_errors})"
                         f" – rotating before giving up"
                     )
-                    await self._rotate_session()
+                    await self._rotate_session(session)
                     await asyncio.sleep(random.uniform(2, 4))
                     self._consecutive_bot_errors = 0
                     continue
@@ -819,12 +821,16 @@ class SofascoreScraper:
             return None
 
         results = await asyncio.gather(
-            *(_fetch_category(category_id) for category_id in category_ids)
+            *(_fetch_category(category_id) for category_id in category_ids),
+            return_exceptions=True,
         )
 
         events_by_id: dict[str, dict] = {}
         successful = 0
         for result in results:
+            if isinstance(result, BaseException):
+                logger.warning("Category schedule failed: %s", result)
+                continue
             if result is None:
                 continue
             successful += 1

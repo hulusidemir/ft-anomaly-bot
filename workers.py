@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timedelta
 
 from scraper import scraper
-from detector import detect_anomalies
+from detector import detect_anomalies, condition_a_dominant_side
 from config import TZ_TURKEY
 from notifier import send_telegram, format_anomaly_message
 from db import (
@@ -32,6 +32,7 @@ _last_finished_match_report: dict | None = None
 # is deliberately longer than one normal result batch, while still giving the
 # dashboard a predictable upper bound when Sofascore or DNS is unhealthy.
 FINISHED_MATCH_SCAN_TIMEOUT_SECONDS = 180
+FINISHED_MATCH_BATCH_SIZE = 50
 
 
 async def _get_match_statistics_bounded(matches) -> list:
@@ -118,6 +119,8 @@ async def anomaly_scan():
                     anomaly_event_ids.add(match.event_id)
                 for condition_type, rules in anomalies:
                     stats_dict = stats_result.to_dict()
+                    if condition_type == "A":
+                        stats_dict["signal_side"] = condition_a_dominant_side(match, stats_result)
                     row_id, is_new, alert_number = await insert_anomaly(
                         match_id=match.event_id,
                         home_team=match.home_team,
@@ -181,7 +184,7 @@ async def finished_match_scan() -> dict:
 
     async with _finished_match_lock:
         try:
-            event_ids = await get_pending_anomaly_match_ids()
+            event_ids = await get_pending_anomaly_match_ids(limit=FINISHED_MATCH_BATCH_SIZE)
             if not event_ids:
                 logger.debug("No pending anomaly matches to finalize")
                 report = {
@@ -194,50 +197,50 @@ async def finished_match_scan() -> dict:
                 return dict(report)
 
             logger.info("Checking %s anomaly matches for final results", len(event_ids))
-            tasks = [
-                asyncio.create_task(scraper.get_match_result(event_id))
+            tasks = {
+                asyncio.create_task(scraper.get_match_result(event_id)): event_id
                 for event_id in event_ids
-            ]
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=FINISHED_MATCH_SCAN_TIMEOUT_SECONDS,
-            )
-            if pending:
-                logger.warning(
-                    "Finished-match scan timed out after %ss; cancelling %s/%s result checks",
-                    FINISHED_MATCH_SCAN_TIMEOUT_SECONDS,
-                    len(pending),
-                    len(tasks),
-                )
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
-
-            archived = 0
-            matches_finished = 0
-            errors = len(pending)
-            for event_id, task in zip(event_ids, tasks):
-                if task in pending:
-                    continue
-                try:
-                    result = task.result()
-                except Exception as exc:
-                    errors += 1
-                    logger.warning(
-                        "Result check failed for event %s: %s", event_id, exc
+            }
+            pending = set(tasks)
+            deadline = asyncio.get_running_loop().time() + FINISHED_MATCH_SCAN_TIMEOUT_SECONDS
+            archived = matches_finished = errors = 0
+            try:
+                while pending:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        break
+                    done, pending = await asyncio.wait(
+                        pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
                     )
-                    continue
-                if (
-                    result is None
-                    or not result.is_finished
-                    or result.score_home is None
-                    or result.score_away is None
-                ):
-                    continue
-                matches_finished += 1
-                archived += await finalize_match_anomalies(
-                    event_id, result.score_home, result.score_away
-                )
+                    for task in done:
+                        event_id = tasks[task]
+                        if task.cancelled():
+                            errors += 1
+                            continue
+                        try:
+                            result = task.result()
+                            if (
+                                result is None or not result.is_finished
+                                or result.score_home is None or result.score_away is None
+                            ):
+                                continue
+                            # Commit each completed result immediately, even if
+                            # another request later times out or is cancelled.
+                            archived += await finalize_match_anomalies(
+                                event_id, result.score_home, result.score_away
+                            )
+                            matches_finished += 1
+                        except Exception as exc:
+                            errors += 1
+                            logger.warning("Result check failed for event %s: %s", event_id, exc)
+                errors += len(pending)
+                if pending:
+                    logger.warning("Finished-match timeout: %s checks deferred", len(pending))
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
             logger.info(
                 "Finished-match scan complete: checked=%s finished=%s archived_signals=%s errors=%s",

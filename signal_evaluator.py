@@ -29,13 +29,16 @@ def infer_dominant_side(
 
     Condition B is explicitly a trailing-team pressure signal, so the team
     behind on the scoreboard is the selection.  For tied Condition A signals,
-    a quality-first composite of the same statistics used by the detector is
-    used.  The returned side is persisted when the signal is first created.
+    the detector's explicit selection is used when available; older snapshots
+    fall back to a quality-first statistical composite.  The returned side is persisted when the signal is first created.
     """
     if condition_type == "B" and score_home != score_away:
         return "away" if score_home > score_away else "home"
 
     values = stats or {}
+    if values.get("signal_side") in VALID_SIDES:
+        return values["signal_side"]
+
     weighted_metrics = (
         ("shots_on_target", 4.0),
         ("expected_goals", 3.0),

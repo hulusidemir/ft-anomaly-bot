@@ -7,6 +7,8 @@ import asyncio
 import logging
 import json
 import time
+from collections import OrderedDict
+from weakref import WeakValueDictionary
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -294,9 +296,10 @@ async def api_status():
 
 # ---- Anomaly Match Details ----
 
-_anomaly_details_cache: dict[str, dict] = {}
-_anomaly_details_locks: dict[str, asyncio.Lock] = {}
+_anomaly_details_cache: OrderedDict[str, dict] = OrderedDict()
+_anomaly_details_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 ANOMALY_DETAILS_TTL = 45.0
+ANOMALY_DETAILS_CACHE_LIMIT = 400
 
 
 @app.get("/api/anomalies/{event_id}/details")
@@ -305,24 +308,24 @@ async def api_anomaly_match_details(event_id: str):
     now = time.monotonic()
     cached = _anomaly_details_cache.get(event_id)
     if cached and (now - cached["ts"]) < ANOMALY_DETAILS_TTL:
+        _anomaly_details_cache.move_to_end(event_id)
         return cached["data"]
 
     lock = _anomaly_details_locks.setdefault(event_id, asyncio.Lock())
     async with lock:
         cached = _anomaly_details_cache.get(event_id)
         if cached and (time.monotonic() - cached["ts"]) < ANOMALY_DETAILS_TTL:
+            _anomaly_details_cache.move_to_end(event_id)
             return cached["data"]
 
         details = await scraper.get_anomaly_match_details(event_id)
         _anomaly_details_cache[event_id] = {"data": details, "ts": time.monotonic()}
 
-        # Opportunistic cleanup: drop old entries to stop unbounded growth.
-        if len(_anomaly_details_cache) > 400:
-            cutoff = time.monotonic() - ANOMALY_DETAILS_TTL * 4
-            stale = [k for k, v in _anomaly_details_cache.items() if v["ts"] < cutoff]
-            for k in stale:
-                _anomaly_details_cache.pop(k, None)
-                _anomaly_details_locks.pop(k, None)
+        _anomaly_details_cache.move_to_end(event_id)
+        while len(_anomaly_details_cache) > ANOMALY_DETAILS_CACHE_LIMIT:
+            _anomaly_details_cache.popitem(last=False)
+        # Locks are weakly held: active callers/waiters retain their lock,
+        # while unused event locks disappear without racing cache eviction.
 
         return details
 
