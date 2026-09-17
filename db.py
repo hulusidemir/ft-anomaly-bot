@@ -10,6 +10,7 @@ import aiosqlite
 from config import DATABASE_PATH, TZ_TURKEY
 from signal_evaluator import (
     infer_dominant_side,
+    evaluate_signal_result,
     evaluate_selected_team_outcome,
     evaluate_equalization,
 )
@@ -444,8 +445,18 @@ async def insert_anomaly(
     score_home: int, score_away: int, minute: int,
     league: str, condition_type: str,
     triggered_rules: list[str], stats_snapshot: dict,
+    *,
+    selected_side: str | None = None,
+    triggered_groups: list[str] | None = None,
+    missing_fields: list[str] | None = None,
+    stats_period: str | None = None,
+    event_fetched_at: float | None = None,
+    stats_fetched_at: float | None = None,
+    decision_at: float | None = None,
+    rule_version: str | None = None,
+    observation_id: int | None = None,
 ) -> tuple[int | None, bool, int]:
-    """Insert or update anomaly. Returns (row_id, is_new, alert_number)."""
+    """Insert a first-signal record without overwriting an existing signal."""
     async with get_db(write=True) as db:
         try:
             dominant_side = infer_dominant_side(
@@ -460,17 +471,6 @@ async def insert_anomaly(
             existing = await cursor.fetchone()
 
             if existing:
-                # Same score — just update stats in place
-                await db.execute(
-                    """UPDATE anomalies SET minute=?,
-                       triggered_rules=?, stats_snapshot=? WHERE id=?""",
-                    (
-                        minute,
-                        json.dumps(triggered_rules), json.dumps(stats_snapshot),
-                        existing["id"],
-                    ),
-                )
-                await db.commit()
                 return existing["id"], False, existing["alert_number"]
 
             # Count all existing alerts for this match (across all conditions & scores)
@@ -492,13 +492,24 @@ async def insert_anomaly(
                 """INSERT INTO anomalies
                    (match_id, home_team, away_team, score_home, score_away,
                     minute, league, condition_type, triggered_rules, stats_snapshot,
-                    alert_number, detected_at_tr, dominant_side, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    alert_number, detected_at_tr, dominant_side, status,
+                    selected_side, triggered_groups, missing_fields, stats_period,
+                    event_fetched_at, stats_fetched_at, decision_at, rule_version,
+                    observation_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
                 (
                     match_id, home_team, away_team, score_home, score_away,
                     minute, league, condition_type,
                     json.dumps(triggered_rules), json.dumps(stats_snapshot),
-                    alert_number, turkey_now_str(), dominant_side, status,
+                    alert_number, turkey_now_str(),
+                    selected_side if selected_side is not None else dominant_side,
+                    status,
+                    selected_side,
+                    json.dumps(triggered_groups) if triggered_groups is not None else None,
+                    json.dumps(missing_fields) if missing_fields is not None else None,
+                    stats_period, event_fetched_at, stats_fetched_at, decision_at,
+                    rule_version, observation_id,
                 ),
             )
             await db.commit()
@@ -650,7 +661,7 @@ async def finalize_match_anomalies(
     """Grade every pending signal for a finished match and archive active rows."""
     async with get_db(write=True) as db:
         cursor = await db.execute(
-            "SELECT id, dominant_side FROM anomalies "
+            "SELECT id, dominant_side, selected_side FROM anomalies "
             "WHERE match_id = ? AND COALESCE(result_status, 'pending') = 'pending'",
             (match_id,),
         )
@@ -660,8 +671,13 @@ async def finalize_match_anomalies(
 
         now_tr = turkey_now_str()
         for row in rows:
+            selected_side = (
+                row["selected_side"]
+                if row["selected_side"] is not None
+                else row["dominant_side"]
+            )
             result_status = evaluate_signal_result(
-                row["dominant_side"], final_score_home, final_score_away
+                selected_side, final_score_home, final_score_away
             )
             await db.execute(
                 """UPDATE anomalies SET
