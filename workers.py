@@ -9,16 +9,18 @@ dashboard request. It is not scheduled, analyzed by AI, or sent to Telegram.
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 
 from scraper import scraper
-from detector import detect_anomalies, condition_a_dominant_side
+from detector import RULE_VERSION, detect_anomalies_detailed
 from config import TZ_TURKEY
 from notifier import send_telegram, format_anomaly_message
 from db import (
     insert_anomaly, mark_notified,
     upsert_upcoming_matches, mark_upcoming_anomaly,
     get_pending_anomaly_match_ids, finalize_match_anomalies,
+    store_match_observation,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,35 +37,105 @@ FINISHED_MATCH_SCAN_TIMEOUT_SECONDS = 180
 FINISHED_MATCH_BATCH_SIZE = 50
 
 
-async def _get_match_statistics_bounded(matches) -> list:
-    """Fetch stats without filling the scraper semaphore with every match.
-
-    Creating one task per live match used to leave result checks stuck behind
-    hundreds of statistics requests.  A small worker pool keeps only the
-    requests that can actually run in flight, so higher-priority result checks
-    can enter the shared scraper queue promptly.
-    """
-    results = [None] * len(matches)
-    next_index = 0
-
-    async def worker():
-        nonlocal next_index
-        while next_index < len(matches):
-            index = next_index
-            next_index += 1
-            try:
-                results[index] = await scraper.get_match_statistics(
-                    matches[index].event_id
-                )
-            except Exception as exc:
-                results[index] = exc
-
-    worker_count = min(
-        len(matches),
-        max(1, getattr(scraper, "MAX_CONCURRENT_REQUESTS", 2)),
+async def _refresh_live_match(match):
+    """Return the current event state before making a signal decision."""
+    current_matches = await scraper.get_live_matches()
+    return next(
+        (current for current in current_matches if current.event_id == match.event_id),
+        None,
     )
-    await asyncio.gather(*(worker() for _ in range(worker_count)))
-    return results
+
+
+async def _process_live_match(match):
+    """Process one match independently once its statistics are available."""
+    try:
+        stats = await scraper.get_match_statistics(match.event_id)
+    except Exception as exc:
+        logger.debug("Stats request failed for %s: %s", match.event_id, exc)
+        return 0, None
+    if stats is None:
+        return 0, None
+
+    current = await _refresh_live_match(match)
+    if current is None:
+        return 0, None
+
+    observed_at = time.time()
+    stats_dict = stats.to_dict()
+    observation_id = await store_match_observation(
+        event_id=current.event_id,
+        observed_at=observed_at,
+        minute=current.minute,
+        period=getattr(stats, "period", None),
+        score_home=current.score_home,
+        score_away=current.score_away,
+        match_status=current.status_desc,
+        league=current.league,
+        home_team=current.home_team,
+        away_team=current.away_team,
+        normalized_stats=stats_dict,
+        missing_fields=stats.missing_fields,
+        validation_status=stats.validation_status,
+        validation_errors=stats.validation_errors,
+        event_fetched_at=observed_at,
+        stats_fetched_at=stats.fetched_at,
+        decision_at=observed_at,
+        rule_version=RULE_VERSION,
+    )
+
+    if stats.validation_status == "INVALID" or current.minute is None:
+        return 0, None
+
+    signals = detect_anomalies_detailed(current, stats)
+    if not signals:
+        return 0, None
+
+    anomaly_count = 0
+    first_signal = signals[0]
+    for signal in signals:
+        signal_stats = dict(stats_dict)
+        signal_stats["signal_side"] = signal.side
+        row_id, is_new, alert_number = await insert_anomaly(
+            match_id=current.event_id,
+            home_team=current.home_team,
+            away_team=current.away_team,
+            score_home=current.score_home,
+            score_away=current.score_away,
+            minute=current.minute,
+            league=current.league,
+            condition_type=signal.condition,
+            triggered_rules=signal.reasons,
+            stats_snapshot=signal_stats,
+            selected_side=signal.side,
+            triggered_groups=signal.groups,
+            missing_fields=stats.missing_fields,
+            stats_period=stats.period,
+            event_fetched_at=observed_at,
+            stats_fetched_at=stats.fetched_at,
+            decision_at=observed_at,
+            rule_version=RULE_VERSION,
+            observation_id=observation_id,
+        )
+
+        if row_id and is_new:
+            anomaly_count += 1
+            msg = format_anomaly_message(
+                home_team=current.home_team,
+                away_team=current.away_team,
+                score_home=current.score_home,
+                score_away=current.score_away,
+                minute=current.minute,
+                league=current.league,
+                condition_type=signal.condition,
+                triggered_rules=signal.reasons,
+                stats=signal_stats,
+                alert_number=alert_number,
+            )
+            sent = await send_telegram(msg)
+            if sent is not None:
+                await mark_notified(row_id)
+
+    return anomaly_count, first_signal
 
 
 async def anomaly_scan():
@@ -79,7 +151,7 @@ async def anomaly_scan():
             logger.info(f"Found {len(matches)} live matches")
 
             if matches:
-                minutes = [m.minute for m in matches]
+                minutes = [m.minute for m in matches if m.minute is not None]
                 logger.info(
                     f"Minute range: {min(minutes)}-{max(minutes)}, "
                     f"distribution: {sorted(set(minutes))[:10]}"
@@ -90,68 +162,28 @@ async def anomaly_scan():
             #   ratio-based rules (cold starts, tactical probing).
             # Upper bound 85: catch late drama that 80 missed, but clip stoppage
             #   noise (90+) that rarely has room for follow-through.
-            eligible = [m for m in matches if 30 <= m.minute <= 85]
+            eligible = [m for m in matches if m.minute is not None and 30 <= m.minute <= 85]
             logger.info(f"Eligible matches (30-85 min): {len(eligible)}")
 
             if not eligible:
                 return
 
-            # Keep the number of queued requests bounded.  The scraper still
-            # applies its own rate limit, but it no longer has hundreds of
-            # live-stat requests waiting ahead of final-result checks.
-            stats_results = await _get_match_statistics_bounded(eligible)
-
-            stats_ok = sum(1 for s in stats_results if s is not None and not isinstance(s, Exception))
-            logger.info(f"Stats fetched: {stats_ok}/{len(eligible)} successful")
-
+            # Each task evaluates its match as soon as its own stats arrive.
+            # A slow statistics request therefore cannot hold other matches.
+            results = await asyncio.gather(
+                *(_process_live_match(match) for match in eligible),
+                return_exceptions=True,
+            )
             anomaly_count = 0
             anomaly_event_ids: set[str] = set()
-            for match, stats_result in zip(eligible, stats_results):
-                if isinstance(stats_result, Exception) or stats_result is None:
-                    logger.debug(
-                        f"No stats for {match.home_team} vs {match.away_team} "
-                        f"(id={match.event_id})"
-                    )
+            for match, result in zip(eligible, results):
+                if isinstance(result, Exception):
+                    logger.warning("Live match processing failed for %s: %s", match.event_id, result)
                     continue
-
-                anomalies = detect_anomalies(match, stats_result)
-                if anomalies:
+                count, signal = result
+                anomaly_count += count
+                if signal is not None:
                     anomaly_event_ids.add(match.event_id)
-                for condition_type, rules in anomalies:
-                    stats_dict = stats_result.to_dict()
-                    if condition_type == "A":
-                        stats_dict["signal_side"] = condition_a_dominant_side(match, stats_result)
-                    row_id, is_new, alert_number = await insert_anomaly(
-                        match_id=match.event_id,
-                        home_team=match.home_team,
-                        away_team=match.away_team,
-                        score_home=match.score_home,
-                        score_away=match.score_away,
-                        minute=match.minute,
-                        league=match.league,
-                        condition_type=condition_type,
-                        triggered_rules=rules,
-                        stats_snapshot=stats_dict,
-                    )
-
-                    if row_id and is_new:
-                        anomaly_count += 1
-                        # Send Telegram notification
-                        msg = format_anomaly_message(
-                            home_team=match.home_team,
-                            away_team=match.away_team,
-                            score_home=match.score_home,
-                            score_away=match.score_away,
-                            minute=match.minute,
-                            league=match.league,
-                            condition_type=condition_type,
-                            triggered_rules=rules,
-                            stats=stats_dict,
-                            alert_number=alert_number,
-                        )
-                        sent = await send_telegram(msg)
-                        if sent is not None:
-                            await mark_notified(row_id)
 
             if anomaly_count > 0:
                 logger.info(f"Detected {anomaly_count} new anomalies")
