@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import workers
 from data_quality import MatchStats
@@ -17,7 +17,7 @@ class WorkerV2Tests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.observation = AsyncMock(return_value=41)
         self.insert = AsyncMock(return_value=(9, True, 1))
-        self.detect = AsyncMock(return_value=[])
+        self.detect = Mock(return_value=[])
         self.telegram = AsyncMock(return_value=None)
 
     async def _process(self, initial, current=None, stats=None):
@@ -64,16 +64,16 @@ class WorkerV2Tests(unittest.IsolatedAsyncioTestCase):
         current = live("stale", home=2, away=1, minute=75)
         stats = MatchStats()
         await self._process(initial, current, stats)
-        self.assertEqual(self.detect.await_count, 1)
-        self.assertEqual(self.detect.await_args.args[0].score_home, 2)
-        self.assertEqual(self.detect.await_args.args[0].score_away, 1)
+        self.detect.assert_called_once()
+        self.assertEqual(self.detect.call_args.args[0].score_home, 2)
+        self.assertEqual(self.detect.call_args.args[0].score_away, 1)
 
     async def test_invalid_observation_is_stored_but_not_detected(self):
         stats = MatchStats(validation_status="INVALID", validation_errors=["bad"])
         await self._process(live(), stats=stats)
         self.observation.assert_awaited_once()
         self.assertEqual(self.observation.await_args.kwargs["validation_status"], "INVALID")
-        self.detect.assert_not_awaited()
+        self.detect.assert_not_called()
         self.insert.assert_not_awaited()
 
     async def test_partial_stats_remain_nullable(self):
@@ -82,7 +82,7 @@ class WorkerV2Tests(unittest.IsolatedAsyncioTestCase):
         normalized = self.observation.await_args.kwargs["normalized_stats"]
         self.assertIsNone(normalized["total_shots_away"])
         self.assertIn("total_shots_away", self.observation.await_args.kwargs["missing_fields"])
-        self.detect.assert_awaited_once()
+        self.detect.assert_called_once()
 
     async def test_signal_observation_and_v2_insert_fields_are_forwarded(self):
         signal = DetectedSignal("A", "away", ["pressure"], ["QUALITY", "VOLUME"])
@@ -90,6 +90,12 @@ class WorkerV2Tests(unittest.IsolatedAsyncioTestCase):
         stats = MatchStats(period="ALL", fetched_at=12.5, validation_status="PARTIAL")
         await self._process(live("signal"), stats=stats)
         self.observation.assert_awaited_once()
+        observation = self.observation.await_args.kwargs
+        self.assertEqual(observation["decision_outcome"], "anomaly")
+        self.assertEqual(observation["decision_condition"], "A")
+        self.assertEqual(observation["selected_side"], "away")
+        self.assertEqual(observation["triggered_groups"], ["QUALITY", "VOLUME"])
+        self.assertEqual(observation["decision_reasons"], ["pressure"])
         self.insert.assert_awaited_once()
         kwargs = self.insert.await_args.kwargs
         self.assertEqual(kwargs["observation_id"], 41)
@@ -103,7 +109,7 @@ class WorkerV2Tests(unittest.IsolatedAsyncioTestCase):
         stats = MatchStats()
         await self._process(live("unknown", minute=None), stats=stats)
         self.observation.assert_awaited_once()
-        self.detect.assert_not_awaited()
+        self.detect.assert_not_called()
 
     async def test_only_reliable_30_to_85_matches_are_processed(self):
         matches = [live("early", minute=29), live("valid", minute=30),

@@ -62,6 +62,31 @@ async def _process_live_match(match):
 
     observed_at = time.time()
     stats_dict = stats.to_dict()
+    if stats.validation_status == "INVALID" or current.minute is None:
+        await store_match_observation(
+            event_id=current.event_id,
+            observed_at=observed_at,
+            minute=current.minute,
+            period=getattr(stats, "period", None),
+            score_home=current.score_home,
+            score_away=current.score_away,
+            match_status=current.status_desc,
+            league=current.league,
+            home_team=current.home_team,
+            away_team=current.away_team,
+            normalized_stats=stats_dict,
+            missing_fields=stats.missing_fields,
+            validation_status=stats.validation_status,
+            validation_errors=stats.validation_errors,
+            event_fetched_at=observed_at,
+            stats_fetched_at=stats.fetched_at,
+            decision_at=observed_at,
+            rule_version=RULE_VERSION,
+        )
+        return 0, None
+
+    signals = detect_anomalies_detailed(current, stats)
+    first_signal = signals[0] if signals else None
     observation_id = await store_match_observation(
         event_id=current.event_id,
         observed_at=observed_at,
@@ -77,21 +102,21 @@ async def _process_live_match(match):
         missing_fields=stats.missing_fields,
         validation_status=stats.validation_status,
         validation_errors=stats.validation_errors,
+        provider="sofascore",
         event_fetched_at=observed_at,
         stats_fetched_at=stats.fetched_at,
         decision_at=observed_at,
         rule_version=RULE_VERSION,
+        decision_outcome="anomaly" if first_signal else "no_signal",
+        decision_condition=first_signal.condition if first_signal else None,
+        selected_side=first_signal.side if first_signal else None,
+        triggered_groups=first_signal.groups if first_signal else None,
+        decision_reasons=first_signal.reasons if first_signal else None,
     )
-
-    if stats.validation_status == "INVALID" or current.minute is None:
-        return 0, None
-
-    signals = detect_anomalies_detailed(current, stats)
     if not signals:
         return 0, None
 
     anomaly_count = 0
-    first_signal = signals[0]
     for signal in signals:
         signal_stats = dict(stats_dict)
         signal_stats["signal_side"] = signal.side
