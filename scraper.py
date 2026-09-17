@@ -2,13 +2,13 @@ import asyncio
 import hashlib
 import random
 import logging
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
 
 from curl_cffi.requests import AsyncSession
 from config import SOFASCORE_BASE, TZ_TURKEY
+from data_quality import MatchStats, normalize_statistics
 
 logger = logging.getLogger(__name__)
 
@@ -28,78 +28,6 @@ ACCEPT_LANGUAGES = [
 SOFASCORE_WEB = "https://www.sofascore.com"
 # Endpoints that should never legitimately 404 – treat 404 on these as bot-protection masking.
 LIST_ENDPOINTS = ("/events/live", "/scheduled-events/")
-
-
-@dataclass
-class MatchStats:
-    possession_home: float = 0.0
-    possession_away: float = 0.0
-    dangerous_attacks_home: int = 0
-    dangerous_attacks_away: int = 0
-    total_shots_home: int = 0
-    total_shots_away: int = 0
-    shots_on_target_home: int = 0
-    shots_on_target_away: int = 0
-    shots_off_target_home: int = 0
-    shots_off_target_away: int = 0
-    blocked_shots_home: int = 0
-    blocked_shots_away: int = 0
-    big_chances_home: int = 0
-    big_chances_away: int = 0
-    expected_goals_home: float = 0.0
-    expected_goals_away: float = 0.0
-    yellow_cards_home: int = 0
-    yellow_cards_away: int = 0
-    red_cards_home: int = 0
-    red_cards_away: int = 0
-    offsides_home: int = 0
-    offsides_away: int = 0
-    corner_kicks_home: int = 0
-    corner_kicks_away: int = 0
-    fouls_home: int = 0
-    fouls_away: int = 0
-    accurate_passes_home: int = 0
-    accurate_passes_away: int = 0
-    total_passes_home: int = 0
-    total_passes_away: int = 0
-    pass_accuracy_home: float = 0.0
-    pass_accuracy_away: float = 0.0
-
-    def to_dict(self) -> dict:
-        return {
-            "possession_home": self.possession_home,
-            "possession_away": self.possession_away,
-            "dangerous_attacks_home": self.dangerous_attacks_home,
-            "dangerous_attacks_away": self.dangerous_attacks_away,
-            "total_shots_home": self.total_shots_home,
-            "total_shots_away": self.total_shots_away,
-            "shots_on_target_home": self.shots_on_target_home,
-            "shots_on_target_away": self.shots_on_target_away,
-            "shots_off_target_home": self.shots_off_target_home,
-            "shots_off_target_away": self.shots_off_target_away,
-            "blocked_shots_home": self.blocked_shots_home,
-            "blocked_shots_away": self.blocked_shots_away,
-            "big_chances_home": self.big_chances_home,
-            "big_chances_away": self.big_chances_away,
-            "expected_goals_home": self.expected_goals_home,
-            "expected_goals_away": self.expected_goals_away,
-            "yellow_cards_home": self.yellow_cards_home,
-            "yellow_cards_away": self.yellow_cards_away,
-            "red_cards_home": self.red_cards_home,
-            "red_cards_away": self.red_cards_away,
-            "offsides_home": self.offsides_home,
-            "offsides_away": self.offsides_away,
-            "corner_kicks_home": self.corner_kicks_home,
-            "corner_kicks_away": self.corner_kicks_away,
-            "fouls_home": self.fouls_home,
-            "fouls_away": self.fouls_away,
-            "accurate_passes_home": self.accurate_passes_home,
-            "accurate_passes_away": self.accurate_passes_away,
-            "total_passes_home": self.total_passes_home,
-            "total_passes_away": self.total_passes_away,
-            "pass_accuracy_home": self.pass_accuracy_home,
-            "pass_accuracy_away": self.pass_accuracy_away,
-        }
 
 
 @dataclass
@@ -440,7 +368,7 @@ class SofascoreScraper:
 
         return None
 
-    def _parse_minute(self, event: dict) -> int:
+    def _parse_minute(self, event: dict) -> int | None:
         """Extract current match minute from event data.
 
         SofaScore provides:
@@ -450,44 +378,38 @@ class SofascoreScraper:
         """
         now = int(time.time())
 
-        # Primary: use statusTime.initial + elapsed since timestamp
+        status = event.get("status", {})
+        period = status.get("period")
+
+        # Use period clocks only when SofaScore identifies the current half.
         status_time = event.get("statusTime", {})
         ts = status_time.get("timestamp")
-        if ts and ts > 0:
-            initial = status_time.get("initial", 0)
+        if period in ("period1", "period2") and ts and ts > 0:
+            initial = status_time.get("initial")
+            if initial is None:
+                initial = 0 if period == "period1" else 2700
             elapsed = now - ts
             minute = (initial + max(elapsed, 0)) // 60
             return max(0, min(int(minute), 130))
 
-        # Fallback: time.currentPeriodStartTimestamp
+        # Fallback: the equivalent period clock in the event time payload.
         time_data = event.get("time", {})
-        if time_data:
+        if period in ("period1", "period2") and time_data:
             period_start = time_data.get("currentPeriodStartTimestamp")
             if period_start and period_start > 0:
-                initial = time_data.get("initial", 0)
+                initial = time_data.get("initial")
+                if initial is None:
+                    initial = 0 if period == "period1" else 2700
                 elapsed = now - period_start
                 minute = (initial + max(elapsed, 0)) // 60
                 return max(0, min(int(minute), 130))
 
-        # Fallback: status description (e.g. "1st half", "2nd half")
+        # Halftime has a known boundary even without a running clock.
         status = event.get("status", {})
-        desc = status.get("description", "")
-        if desc and desc[0].isdigit():
-            try:
-                return int(desc.split("+")[0].split("'")[0])
-            except (ValueError, IndexError):
-                pass
+        if str(status.get("description", "")).lower() == "halftime":
+            return 45
 
-        # Last resort: estimate from startTimestamp (accounts for HT break).
-        start_ts = event.get("startTimestamp", 0)
-        if start_ts and start_ts > 0:
-            elapsed_min = (now - start_ts) // 60
-            # Subtract half-time break (15 min) if we're past 45 mins elapsed.
-            if elapsed_min > 45:
-                elapsed_min -= 15
-            return max(0, min(int(elapsed_min), 130))
-
-        return 0
+        return None
 
     async def get_live_matches(self, retries: int = 5) -> list[LiveMatch]:
         """Fetch all currently live football matches."""
@@ -577,196 +499,12 @@ class SofascoreScraper:
             status_desc=str(status.get("description") or ""),
         )
 
-    _STAT_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?")
-
-    def _parse_stat_value(self, value) -> float:
-        """Parse Sofascore stat values.
-
-        Sofascore returns stats in multiple shapes:
-          * pure numbers (int/float)
-          * percent strings like "58%"
-          * ratio strings like "330/420 (79%)" — we want the first number
-          * "5 (2)" — first number
-        """
-        if value is None:
-            return 0.0
-        if isinstance(value, (int, float)):
-            return float(value)
-        s = str(value).strip()
-        if not s:
-            return 0.0
-        match = self._STAT_NUM_RE.search(s.replace(",", "."))
-        if not match:
-            return 0.0
-        try:
-            return float(match.group(0))
-        except ValueError:
-            return 0.0
-
-    def _parse_percent(self, value) -> float:
-        """Extract a percent value. If the string is 'x/y (z%)' we return z."""
-        if value is None:
-            return 0.0
-        if isinstance(value, (int, float)):
-            return float(value)
-        s = str(value)
-        # Look for an embedded percent first; many Sofascore strings are
-        # formatted as "330/420 (79%)" where the raw first number is the
-        # accurate count, not the percentage.
-        pct_match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", s)
-        if pct_match:
-            try:
-                return float(pct_match.group(1).replace(",", "."))
-            except ValueError:
-                return 0.0
-        return self._parse_stat_value(s)
-
-    def _parse_ratio(self, value) -> tuple[float, float]:
-        """Parse a ratio like '330/420 (79%)' → (330, 420). Returns (num, 0) if not a ratio."""
-        if value is None:
-            return 0.0, 0.0
-        s = str(value)
-        m = re.search(r"(\d+(?:[.,]\d+)?)\s*/\s*(\d+(?:[.,]\d+)?)", s)
-        if m:
-            try:
-                return (
-                    float(m.group(1).replace(",", ".")),
-                    float(m.group(2).replace(",", ".")),
-                )
-            except ValueError:
-                return 0.0, 0.0
-        # Fall back to a single number (accurate count only)
-        return self._parse_stat_value(s), 0.0
-
     async def get_match_statistics(self, event_id: str) -> MatchStats | None:
         """Fetch detailed statistics for a specific match."""
         data = await self._fetch_json(f"{SOFASCORE_BASE}/event/{event_id}/statistics")
         if not data:
             return None
-
-        stats = MatchStats()
-        stat_periods = data.get("statistics", [])
-
-        # Look for "ALL" period, fallback to last available
-        target_period = None
-        for period in stat_periods:
-            if period.get("period") == "ALL":
-                target_period = period
-                break
-        if not target_period and stat_periods:
-            target_period = stat_periods[-1]
-        if not target_period:
-            return None
-
-        seen_total_shots = False
-
-        for group in target_period.get("groups", []):
-            for item in group.get("statisticsItems", []):
-                key = item.get("key", "") or ""
-                key_lc = key.lower()
-                name_lc = (item.get("name", "") or "").lower()
-                # homeValue / awayValue are numeric when available; home / away
-                # are display strings (e.g. "5 (2)", "330/420 (79%)").
-                home_raw = item.get("homeValue")
-                away_raw = item.get("awayValue")
-                home_display = item.get("home", "")
-                away_display = item.get("away", "")
-                home_val = home_raw if home_raw is not None else home_display
-                away_val = away_raw if away_raw is not None else away_display
-
-                key_norm = re.sub(r"[^a-z0-9]", "", key_lc)
-                name_norm = re.sub(r"[^a-z0-9]", "", name_lc)
-
-                def _match(*tokens) -> bool:
-                    normalized = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in tokens]
-                    return (
-                        key_norm in normalized
-                        or name_norm in normalized
-                        or any(t and (t in key_norm or t in name_norm) for t in normalized)
-                    )
-
-                if _match("ballpossession", "ball possession", "possession"):
-                    stats.possession_home = self._parse_percent(home_display or home_val)
-                    stats.possession_away = self._parse_percent(away_display or away_val)
-                elif _match("expectedgoals", "expected goals", "xg"):
-                    stats.expected_goals_home = self._parse_stat_value(home_val)
-                    stats.expected_goals_away = self._parse_stat_value(away_val)
-                elif (
-                    _match("bigchancecreated", "big chances", "big chance")
-                    and "missed" not in key_norm
-                    and "missed" not in name_norm
-                ):
-                    stats.big_chances_home = int(self._parse_stat_value(home_val))
-                    stats.big_chances_away = int(self._parse_stat_value(away_val))
-                elif _match("dangerousattacks", "dangerous attacks", "dangerous attack"):
-                    stats.dangerous_attacks_home = int(self._parse_stat_value(home_val))
-                    stats.dangerous_attacks_away = int(self._parse_stat_value(away_val))
-                elif _match("totalshotsongoal", "totalshots", "total shots", "shots total", "total attempts"):
-                    stats.total_shots_home = int(self._parse_stat_value(home_val))
-                    stats.total_shots_away = int(self._parse_stat_value(away_val))
-                    seen_total_shots = True
-                elif _match("shotsongoal", "shotsontarget", "shots on target", "on target"):
-                    stats.shots_on_target_home = int(self._parse_stat_value(home_val))
-                    stats.shots_on_target_away = int(self._parse_stat_value(away_val))
-                elif _match("shotsoffgoal", "shotsofftarget", "shots off target", "off target"):
-                    stats.shots_off_target_home = int(self._parse_stat_value(home_val))
-                    stats.shots_off_target_away = int(self._parse_stat_value(away_val))
-                elif _match("blockedscoringattempt", "blocked shots", "blocked shot"):
-                    stats.blocked_shots_home = int(self._parse_stat_value(home_val))
-                    stats.blocked_shots_away = int(self._parse_stat_value(away_val))
-                elif _match("cornerkicks", "corners", "corner kicks"):
-                    stats.corner_kicks_home = int(self._parse_stat_value(home_val))
-                    stats.corner_kicks_away = int(self._parse_stat_value(away_val))
-                elif _match("offsides", "offside"):
-                    stats.offsides_home = int(self._parse_stat_value(home_val))
-                    stats.offsides_away = int(self._parse_stat_value(away_val))
-                elif _match("fouls", "foul"):
-                    stats.fouls_home = int(self._parse_stat_value(home_val))
-                    stats.fouls_away = int(self._parse_stat_value(away_val))
-                elif _match("yellowcards", "yellow cards", "yellow card"):
-                    stats.yellow_cards_home = int(self._parse_stat_value(home_val))
-                    stats.yellow_cards_away = int(self._parse_stat_value(away_val))
-                elif _match("redcards", "red cards", "red card"):
-                    stats.red_cards_home = int(self._parse_stat_value(home_val))
-                    stats.red_cards_away = int(self._parse_stat_value(away_val))
-                elif _match("accuratepasses", "passes accurate", "accurate passes"):
-                    # Display string is usually "330/420 (79%)" → we grab both sides.
-                    accurate_h, total_h = self._parse_ratio(home_display or home_val)
-                    accurate_a, total_a = self._parse_ratio(away_display or away_val)
-                    stats.accurate_passes_home = int(accurate_h)
-                    stats.accurate_passes_away = int(accurate_a)
-                    stats.pass_accuracy_home = self._parse_percent(home_display or home_val)
-                    stats.pass_accuracy_away = self._parse_percent(away_display or away_val)
-                    if total_h > 0:
-                        stats.total_passes_home = int(total_h)
-                    if total_a > 0:
-                        stats.total_passes_away = int(total_a)
-                elif _match("passes", "total passes"):
-                    val_h = int(self._parse_stat_value(home_val))
-                    val_a = int(self._parse_stat_value(away_val))
-                    if stats.total_passes_home == 0:
-                        stats.total_passes_home = val_h
-                    if stats.total_passes_away == 0:
-                        stats.total_passes_away = val_a
-
-        # Derive total shots from components when Sofascore didn't emit it directly.
-        if not seen_total_shots:
-            derived_home = (
-                stats.shots_on_target_home
-                + stats.shots_off_target_home
-                + stats.blocked_shots_home
-            )
-            derived_away = (
-                stats.shots_on_target_away
-                + stats.shots_off_target_away
-                + stats.blocked_shots_away
-            )
-            if derived_home > 0:
-                stats.total_shots_home = derived_home
-            if derived_away > 0:
-                stats.total_shots_away = derived_away
-
-        return stats
+        return normalize_statistics(data, fetched_at=time.time())
 
     async def _fetch_upcoming_by_category(self, date: str) -> dict | None:
         """Fetch a daily schedule through the category endpoints.
