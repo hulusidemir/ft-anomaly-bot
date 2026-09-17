@@ -1,4 +1,9 @@
-"""Pure helpers for fixing a signal's predicted side and grading its result."""
+"""Pure helpers for fixing a signal's predicted side and grading its result.
+
+``infer_dominant_side`` remains for callers that create a new signal through the
+legacy interface.  Database migrations deliberately do not run it over old
+rows: absent historical decision metadata must stay unknown.
+"""
 
 from typing import Any, Mapping
 
@@ -82,3 +87,75 @@ def evaluate_signal_result(
         dominant_side == "away" and final_score_away > final_score_home
     )
     return "successful" if dominant_won else "failed"
+
+
+def evaluate_selected_team_outcome(
+    selected_side: str | None,
+    final_score_home: int,
+    final_score_away: int,
+) -> dict[str, object | None]:
+    """Return the explicit selected-team result contract.
+
+    The old ``successful``/``failed`` value is included for compatibility with
+    the existing archive API.  New reporting should use ``outcome`` and
+    ``selected_team_won`` so that a draw is not silently conflated with a loss.
+    """
+    if selected_side not in VALID_SIDES:
+        return {
+            "outcome": "UNKNOWN",
+            "selected_team_won": None,
+            "legacy_result_status": "unresolved",
+        }
+
+    selected_score, opponent_score = (
+        (final_score_home, final_score_away)
+        if selected_side == "home"
+        else (final_score_away, final_score_home)
+    )
+    if selected_score > opponent_score:
+        outcome = "WON"
+    elif selected_score == opponent_score:
+        outcome = "DREW"
+    else:
+        outcome = "LOST"
+    return {
+        "outcome": outcome,
+        "selected_team_won": outcome == "WON",
+        "legacy_result_status": "successful" if outcome == "WON" else "failed",
+    }
+
+
+def evaluate_equalization(
+    condition_type: str,
+    selected_side: str | None,
+    signal_score_home: int,
+    signal_score_away: int,
+    later_scores: list[tuple[int, int]],
+) -> bool | None:
+    """Return ``True`` only when retained observations prove equalization.
+
+    A final losing score cannot prove that a trailing team never equalized, so
+    absence of positive observation evidence remains ``None`` rather than
+    ``False``.  ``scored_next`` is intentionally not inferred here because
+    polling snapshots cannot reliably establish goal order.
+    """
+    if condition_type != "B" or selected_side not in VALID_SIDES:
+        return None
+
+    selected_signal, opponent_signal = (
+        (signal_score_home, signal_score_away)
+        if selected_side == "home"
+        else (signal_score_away, signal_score_home)
+    )
+    if selected_signal >= opponent_signal:
+        return None
+
+    for home_score, away_score in later_scores:
+        selected_score, opponent_score = (
+            (home_score, away_score)
+            if selected_side == "home"
+            else (away_score, home_score)
+        )
+        if selected_score >= opponent_score:
+            return True
+    return None

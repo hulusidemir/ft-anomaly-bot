@@ -1,12 +1,18 @@
 import os
 import asyncio
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 import json
 from datetime import datetime
 import aiosqlite
 from config import DATABASE_PATH, TZ_TURKEY
-from signal_evaluator import infer_dominant_side, evaluate_signal_result
+from signal_evaluator import (
+    infer_dominant_side,
+    evaluate_selected_team_outcome,
+    evaluate_equalization,
+)
 
 logger = logging.getLogger(__name__)
 _connection_slots = asyncio.Semaphore(4)
@@ -99,9 +105,6 @@ async def init_db():
 
         """)
         await db.commit()
-        # Gemini analysis was removed; discard its obsolete local cache table.
-        await db.execute("DROP TABLE IF EXISTS upcoming_analyses")
-        await db.commit()
         # Preserve the latest existing row state as the match-wide state when
         # upgrading databases created before match actions were introduced.
         await db.execute(
@@ -130,6 +133,24 @@ async def init_db():
             "finished_at": "TEXT DEFAULT NULL",
             "deletion_reason": "TEXT DEFAULT NULL",
             "result_checked_at": "TEXT DEFAULT NULL",
+            # V2 first-signal evidence.  These columns are intentionally NULL
+            # for legacy rows; migration cannot recreate an historical choice.
+            "selected_side": "TEXT DEFAULT NULL",
+            "triggered_groups": "TEXT DEFAULT NULL",
+            "missing_fields": "TEXT DEFAULT NULL",
+            "stats_period": "TEXT DEFAULT NULL",
+            "event_fetched_at": "REAL DEFAULT NULL",
+            "stats_fetched_at": "REAL DEFAULT NULL",
+            "decision_at": "REAL DEFAULT NULL",
+            "rule_version": "TEXT DEFAULT NULL",
+            "observation_id": "INTEGER DEFAULT NULL",
+            # Explicit evaluation contract.  scored_next remains NULL until an
+            # ordered event feed can establish it reliably.
+            "selected_team_outcome": "TEXT DEFAULT NULL",
+            "selected_team_won": "INTEGER DEFAULT NULL",
+            "equalized": "INTEGER DEFAULT NULL",
+            "failed_to_equalize": "INTEGER DEFAULT NULL",
+            "scored_next": "INTEGER DEFAULT NULL",
         }
         for name, definition in migrations.items():
             if name not in columns:
@@ -145,39 +166,278 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_anomalies_result_status "
             "ON anomalies(result_status, deleted_at)"
         )
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS match_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                observed_at REAL NOT NULL,
+                minute INTEGER,
+                period TEXT,
+                score_home INTEGER,
+                score_away INTEGER,
+                match_status TEXT,
+                league TEXT,
+                home_team TEXT,
+                away_team TEXT,
+                normalized_stats TEXT NOT NULL,
+                missing_fields TEXT NOT NULL,
+                validation_status TEXT NOT NULL,
+                validation_errors TEXT,
+                provider TEXT NOT NULL,
+                event_fetched_at REAL,
+                stats_fetched_at REAL,
+                decision_at REAL,
+                rule_version TEXT,
+                decision_outcome TEXT,
+                decision_condition TEXT,
+                selected_side TEXT,
+                triggered_groups TEXT,
+                decision_reasons TEXT,
+                source_metadata TEXT,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_observations_event_time
+                ON match_observations(event_id, observed_at, id);
+
+            CREATE TABLE IF NOT EXISTS latest_match_states (
+                event_id TEXT PRIMARY KEY,
+                observation_id INTEGER NOT NULL,
+                observed_at REAL NOT NULL,
+                minute INTEGER,
+                period TEXT,
+                score_home INTEGER,
+                score_away INTEGER,
+                match_status TEXT,
+                normalized_stats TEXT NOT NULL,
+                missing_fields TEXT NOT NULL,
+                validation_status TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                anomaly_id INTEGER NOT NULL,
+                chat_id TEXT NOT NULL,
+                message_text TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK(state IN ('PENDING', 'SENT', 'FAILED')),
+                terminal INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL,
+                claimed_at REAL,
+                claim_expires_at REAL,
+                claim_token TEXT,
+                last_error TEXT,
+                telegram_message_id INTEGER,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                sent_at REAL,
+                UNIQUE(anomaly_id, chat_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_notification_due
+                ON notification_deliveries(state, terminal, next_attempt_at,
+                                           claim_expires_at, created_at);
+        """)
         await db.commit()
-        await _backfill_dominant_sides(db)
-        # Removed live-list/live-detection feature: discard its obsolete state.
-        await db.execute("DROP TABLE IF EXISTS live_match_actions")
+
+
+# ---- Immutable observation history ----
+
+
+def _decode_json_column(value, fallback):
+    if not isinstance(value, str):
+        return value if value is not None else fallback
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
+async def store_match_observation(
+    *,
+    event_id: str,
+    observed_at: float,
+    minute: int | None,
+    period: str | None,
+    score_home: int | None,
+    score_away: int | None,
+    match_status: str | None,
+    league: str | None,
+    home_team: str | None,
+    away_team: str | None,
+    normalized_stats: dict,
+    missing_fields: list[str],
+    validation_status: str,
+    validation_errors: list[str] | None = None,
+    provider: str = "sofascore",
+    event_fetched_at: float | None = None,
+    stats_fetched_at: float | None = None,
+    decision_at: float | None = None,
+    rule_version: str | None = None,
+    decision_outcome: str | None = None,
+    decision_condition: str | None = None,
+    selected_side: str | None = None,
+    triggered_groups: list[str] | None = None,
+    decision_reasons: list[str] | None = None,
+    source_metadata: dict | None = None,
+) -> int:
+    """Append a lossless normalized observation and advance latest state.
+
+    Historical rows are never updated.  A late-arriving older observation is
+    retained but cannot move ``latest_match_states`` backwards.
+    """
+    if not event_id:
+        raise ValueError("event_id is required")
+    if validation_status not in {"VALID", "PARTIAL", "INVALID"}:
+        raise ValueError("validation_status must be VALID, PARTIAL, or INVALID")
+
+    created_at = time.time()
+    stats_json = json.dumps(normalized_stats, separators=(",", ":"))
+    missing_json = json.dumps(sorted(set(missing_fields)), separators=(",", ":"))
+    validation_json = json.dumps(validation_errors or [], separators=(",", ":"))
+    groups_json = (
+        json.dumps(triggered_groups, separators=(",", ":"))
+        if triggered_groups is not None else None
+    )
+    reasons_json = (
+        json.dumps(decision_reasons, separators=(",", ":"))
+        if decision_reasons is not None else None
+    )
+    source_json = (
+        json.dumps(source_metadata, separators=(",", ":"))
+        if source_metadata is not None else None
+    )
+
+    async with get_db(write=True) as db:
+        cursor = await db.execute(
+            """INSERT INTO match_observations (
+                   event_id, observed_at, minute, period, score_home, score_away,
+                   match_status, league, home_team, away_team, normalized_stats,
+                   missing_fields, validation_status, validation_errors, provider,
+                   event_fetched_at, stats_fetched_at, decision_at, rule_version,
+                   decision_outcome, decision_condition, selected_side,
+                   triggered_groups, decision_reasons, source_metadata, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                         ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event_id, float(observed_at), minute, period, score_home, score_away,
+                match_status, league, home_team, away_team, stats_json, missing_json,
+                validation_status, validation_json, provider, event_fetched_at,
+                stats_fetched_at, decision_at, rule_version, decision_outcome,
+                decision_condition, selected_side, groups_json, reasons_json,
+                source_json, created_at,
+            ),
+        )
+        observation_id = int(cursor.lastrowid)
+        await db.execute(
+            """INSERT INTO latest_match_states (
+                   event_id, observation_id, observed_at, minute, period,
+                   score_home, score_away, match_status, normalized_stats,
+                   missing_fields, validation_status, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(event_id) DO UPDATE SET
+                   observation_id=excluded.observation_id,
+                   observed_at=excluded.observed_at,
+                   minute=excluded.minute,
+                   period=excluded.period,
+                   score_home=excluded.score_home,
+                   score_away=excluded.score_away,
+                   match_status=excluded.match_status,
+                   normalized_stats=excluded.normalized_stats,
+                   missing_fields=excluded.missing_fields,
+                   validation_status=excluded.validation_status,
+                   updated_at=excluded.updated_at
+               WHERE excluded.observed_at > latest_match_states.observed_at
+                  OR (excluded.observed_at = latest_match_states.observed_at
+                      AND excluded.observation_id > latest_match_states.observation_id)""",
+            (
+                event_id, observation_id, float(observed_at), minute, period,
+                score_home, score_away, match_status, stats_json, missing_json,
+                validation_status, created_at,
+            ),
+        )
         await db.commit()
+        return observation_id
+
+
+def _observation_dict(row: aiosqlite.Row) -> dict:
+    item = dict(row)
+    for key, fallback in (
+        ("normalized_stats", {}),
+        ("missing_fields", []),
+        ("validation_errors", []),
+        ("triggered_groups", None),
+        ("decision_reasons", None),
+        ("source_metadata", None),
+    ):
+        if key in item:
+            item[key] = _decode_json_column(item[key], fallback)
+    return item
+
+
+async def get_recent_observations(
+    event_id: str,
+    *,
+    since: float | None = None,
+    before: float | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    clauses = ["event_id = ?"]
+    params: list = [event_id]
+    if since is not None:
+        clauses.append("observed_at >= ?")
+        params.append(float(since))
+    if before is not None:
+        clauses.append("observed_at <= ?")
+        params.append(float(before))
+    params.append(max(1, min(int(limit), 5000)))
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM match_observations WHERE {' AND '.join(clauses)} "
+            "ORDER BY observed_at DESC, id DESC LIMIT ?",
+            params,
+        )
+        return [_observation_dict(row) for row in await cursor.fetchall()]
+
+
+async def get_latest_match_state(event_id: str) -> dict | None:
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT o.* FROM latest_match_states AS latest
+               JOIN match_observations AS o ON o.id = latest.observation_id
+               WHERE latest.event_id = ?""",
+            (event_id,),
+        )
+        row = await cursor.fetchone()
+        return _observation_dict(row) if row else None
+
+
+async def cleanup_observations(retention_days: int) -> int:
+    """Delete old unreferenced history while preserving signal/latest evidence."""
+    if retention_days < 1:
+        raise ValueError("retention_days must be at least 1")
+    cutoff = time.time() - retention_days * 86400
+    async with get_db(write=True) as db:
+        cursor = await db.execute(
+            """DELETE FROM match_observations AS o
+               WHERE o.observed_at < ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM anomalies AS a WHERE a.observation_id = o.id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM latest_match_states AS latest
+                     WHERE latest.observation_id = o.id
+                 )""",
+            (cutoff,),
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 # ---- Anomaly CRUD ----
 
-
-async def _backfill_dominant_sides(db: aiosqlite.Connection):
-    """Populate prediction sides for records created before this feature."""
-    cursor = await db.execute(
-        "SELECT id, condition_type, score_home, score_away, stats_snapshot "
-        "FROM anomalies WHERE COALESCE(dominant_side, 'unknown') = 'unknown'"
-    )
-    rows = await cursor.fetchall()
-    updates = []
-    for row in rows:
-        try:
-            stats = json.loads(row["stats_snapshot"] or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            stats = {}
-        side = infer_dominant_side(
-            row["condition_type"], row["score_home"], row["score_away"], stats
-        )
-        if side != "unknown":
-            updates.append((side, row["id"]))
-    if updates:
-        await db.executemany(
-            "UPDATE anomalies SET dominant_side = ? WHERE id = ?", updates
-        )
-        await db.commit()
 
 async def insert_anomaly(
     match_id: str, home_team: str, away_team: str,
