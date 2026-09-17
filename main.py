@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
+import workers
 from db import (
     init_db, close_db, get_anomalies, update_anomaly_status,
     bulk_update_anomaly_status, delete_anomalies,
@@ -29,7 +30,12 @@ from db import (
     bulk_update_upcoming_status, delete_upcoming_matches, clear_upcoming_matches,
     clear_database,
 )
-from workers import anomaly_scan, refresh_upcoming_matches, finished_match_scan
+from workers import (
+    anomaly_scan,
+    refresh_upcoming_matches,
+    finished_match_scan,
+    notification_retry_scan,
+)
 from scraper import scraper
 from notifier import send_telegram
 
@@ -68,6 +74,17 @@ async def lifespan(app: FastAPI):
         coalesce=True,
         misfire_grace_time=300,
         next_run_time=datetime.now(config.TZ_TURKEY),
+    )
+
+    scheduler.add_job(
+        notification_retry_scan,
+        "interval",
+        seconds=60,
+        id="notification_retry",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
     )
 
     scheduler.start()
@@ -284,14 +301,57 @@ async def api_clear_database():
 
 @app.get("/api/status")
 async def api_status():
-    """Health check and scheduler info."""
-    jobs = []
-    for job in scheduler.get_jobs():
-        jobs.append({
-            "id": job.id,
-            "next_run": str(job.next_run_time) if job.next_run_time else None,
-        })
-    return {"status": "running", "scheduler_jobs": jobs}
+    """Return service health and the scheduler's current runtime state."""
+    jobs = scheduler.get_jobs()
+    job_ids = {job.id for job in jobs}
+    scheduler_running = bool(scheduler.running)
+
+    last_scan_at = getattr(workers, "last_anomaly_scan_at", None)
+    last_fetch_at = getattr(workers, "last_successful_live_fetch_at", None)
+    last_scan_error = getattr(workers, "last_anomaly_scan_error", None)
+    last_live_match_count = getattr(workers, "last_live_match_count", None)
+    last_processed_match_count = getattr(workers, "last_processed_match_count", None)
+    now = time.time()
+    scan_age_seconds = (
+        max(0.0, now - float(last_scan_at))
+        if last_scan_at is not None
+        else None
+    )
+    scan_is_recent = (
+        scan_age_seconds is not None
+        and scan_age_seconds <= max(60, config.SCAN_INTERVAL_SECONDS * 2)
+    )
+    health = (
+        "healthy"
+        if scheduler_running
+        and "anomaly_scan" in job_ids
+        and "notification_retry" in job_ids
+        and scan_is_recent
+        and last_scan_error is None
+        else "degraded"
+    )
+
+    return {
+        "status": "running",
+        "service_status": "running",
+        "health": health,
+        "scheduler_running": scheduler_running,
+        "anomaly_scan_job_present": "anomaly_scan" in job_ids,
+        "notification_retry_job_present": "notification_retry" in job_ids,
+        "last_anomaly_scan_at": last_scan_at,
+        "last_successful_live_fetch_at": last_fetch_at,
+        "last_live_match_count": last_live_match_count,
+        "last_processed_match_count": last_processed_match_count,
+        "last_scan_error": last_scan_error,
+        "seconds_since_successful_scan": scan_age_seconds,
+        "scheduler_jobs": [
+            {
+                "id": job.id,
+                "next_run": str(job.next_run_time) if job.next_run_time else None,
+            }
+            for job in jobs
+        ],
+    }
 
 
 # ---- Anomaly Match Details ----

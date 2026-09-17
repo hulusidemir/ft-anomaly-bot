@@ -60,6 +60,8 @@ async def init_db():
         await connection.execute("PRAGMA journal_mode=WAL")
     async with get_db(write=True) as db:
         await db.executescript("""
+            DROP TABLE IF EXISTS live_match_actions;
+
             CREATE TABLE IF NOT EXISTS anomalies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 match_id TEXT NOT NULL,
@@ -435,6 +437,123 @@ async def cleanup_observations(retention_days: int) -> int:
         )
         await db.commit()
         return cursor.rowcount
+
+
+# ---- Notification delivery state ----
+
+
+async def create_notification_delivery(
+    anomaly_id: int,
+    chat_id: str,
+    message_text: str,
+    *,
+    now: float | None = None,
+) -> tuple[dict, bool]:
+    """Create one pending delivery per anomaly and recipient.
+
+    Returns ``(delivery, created)``. Existing rows, including SENT rows, are
+    returned unchanged and are never reset for another send.
+    """
+    timestamp = time.time() if now is None else float(now)
+    async with get_db(write=True) as db:
+        cursor = await db.execute(
+            "SELECT * FROM notification_deliveries "
+            "WHERE anomaly_id = ? AND chat_id = ?",
+            (anomaly_id, str(chat_id)),
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            return dict(existing), False
+
+        cursor = await db.execute(
+            """INSERT INTO notification_deliveries
+               (anomaly_id, chat_id, message_text, state, terminal,
+                attempt_count, created_at, updated_at)
+               VALUES (?, ?, ?, 'PENDING', 0, 0, ?, ?)""",
+            (anomaly_id, str(chat_id), message_text, timestamp, timestamp),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM notification_deliveries WHERE id = ?",
+            (cursor.lastrowid,),
+        )
+        return dict(await cursor.fetchone()), True
+
+
+async def record_notification_failure(
+    delivery_id: int,
+    error: str,
+    *,
+    next_retry_at: float | None = None,
+    now: float | None = None,
+) -> dict | None:
+    """Record a failed attempt on the existing delivery row."""
+    timestamp = time.time() if now is None else float(now)
+    async with get_db(write=True) as db:
+        await db.execute(
+            """UPDATE notification_deliveries
+               SET state = 'FAILED', terminal = 0,
+                   attempt_count = COALESCE(attempt_count, 0) + 1,
+                   last_error = ?, next_attempt_at = ?, updated_at = ?
+               WHERE id = ? AND state != 'SENT'""",
+            (str(error), next_retry_at, timestamp, delivery_id),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM notification_deliveries WHERE id = ?",
+            (delivery_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def mark_notification_sent(
+    delivery_id: int,
+    *,
+    telegram_message_id: int | None = None,
+    sent_at: float | None = None,
+    now: float | None = None,
+) -> dict | None:
+    """Mark an existing delivery SENT and clear retry state."""
+    timestamp = time.time() if now is None else float(now)
+    delivered_at = timestamp if sent_at is None else float(sent_at)
+    async with get_db(write=True) as db:
+        await db.execute(
+            """UPDATE notification_deliveries
+               SET state = 'SENT', terminal = 1, last_error = NULL,
+                   next_attempt_at = NULL, sent_at = ?,
+                   telegram_message_id = COALESCE(?, telegram_message_id),
+                   updated_at = ?
+               WHERE id = ?""",
+            (delivered_at, telegram_message_id, timestamp, delivery_id),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM notification_deliveries WHERE id = ?",
+            (delivery_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def get_due_notification_deliveries(
+    *,
+    now: float | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Return pending/failed deliveries whose retry time has arrived."""
+    timestamp = time.time() if now is None else float(now)
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT * FROM notification_deliveries
+               WHERE terminal = 0
+                 AND state IN ('PENDING', 'FAILED')
+                 AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+               ORDER BY created_at, id
+               LIMIT ?""",
+            (timestamp, max(1, min(int(limit), 5000))),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
 
 
 # ---- Anomaly CRUD ----

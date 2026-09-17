@@ -21,6 +21,7 @@ from db import (
     upsert_upcoming_matches, mark_upcoming_anomaly,
     get_pending_anomaly_match_ids, finalize_match_anomalies,
     store_match_observation,
+    get_due_notification_deliveries,
 )
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,23 @@ async def anomaly_scan():
 
         except Exception as e:
             logger.error(f"Live scan error: {e}", exc_info=True)
+
+
+async def notification_retry_scan():
+    """Retry notification deliveries whose next attempt time has arrived."""
+    deliveries = await get_due_notification_deliveries()
+    for delivery in deliveries:
+        try:
+            await send_telegram(
+                delivery["message_text"],
+                anomaly_id=delivery["anomaly_id"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Notification retry failed for delivery %s: %s",
+                delivery.get("id"),
+                exc,
+            )
 
 
 async def finished_match_scan() -> dict:

@@ -111,6 +111,24 @@ class DetectorTests(unittest.TestCase):
         )
         self.assertEqual(len(check_condition_b(match(away=1), stats)), 2)
 
+    def test_shot_volume_fallback_works_without_xg_or_big_chances(self):
+        stats = MatchStats(
+            shots_on_target_home=2, shots_on_target_away=8,
+            shots_off_target_home=2, shots_off_target_away=4,
+            corner_kicks_home=1, corner_kicks_away=4,
+        )
+
+        self.assertTrue(check_condition_b(match(home=1), stats))
+
+    def test_shot_volume_fallback_does_not_treat_missing_values_as_zero(self):
+        stats = MatchStats(
+            shots_on_target_home=2, shots_on_target_away=8,
+            shots_off_target_home=2,
+            corner_kicks_home=1, corner_kicks_away=4,
+        )
+
+        self.assertEqual(check_condition_b(match(home=1), stats), [])
+
     def test_late_quality_and_vulnerability_still_work(self):
         stats = MatchStats(
             expected_goals_home=1.5, expected_goals_away=0,

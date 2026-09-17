@@ -79,6 +79,19 @@ def _advantage(stats: MatchStats, metric: str, side: str) -> Optional[float]:
     return a - b
 
 
+def _effective_total_shots(stats: MatchStats, side: str):
+    """Return provider totals, or nullable on/off-target totals as fallback."""
+    total_side, total_other = _pair(stats, "total_shots", side)
+    if total_side is not None and total_other is not None:
+        return total_side, total_other
+
+    on_side, on_other = _pair(stats, "shots_on_target", side)
+    off_side, off_other = _pair(stats, "shots_off_target", side)
+    if None in (on_side, on_other, off_side, off_other):
+        return None, None
+    return on_side + off_side, on_other + off_other
+
+
 @dataclass
 class RecentPressure:
     """Optional last-N-minute deltas, supplied by the caller from observation
@@ -107,7 +120,7 @@ class RecentPressure:
 
 def _volume_group(stats: MatchStats, side: str, scale: float) -> Optional[str]:
     """VOLUME — cumulative shot-count dominance, optionally possession-backed."""
-    ts_side, ts_other = _pair(stats, "total_shots", side)
+    ts_side, ts_other = _effective_total_shots(stats, side)
     if ts_side is None or ts_other is None:
         return None
     adv = ts_side - ts_other
@@ -270,7 +283,7 @@ def _attacking_core(
     if bc_adv is not None and bc_adv >= 3:
         return f"yüksek fırsat kalitesi: büyük fırsat +{bc_adv:g}"
 
-    ts_losing, ts_winning = _pair(stats, "total_shots", losing)
+    ts_losing, ts_winning = _effective_total_shots(stats, losing)
     sot_losing, sot_winning = _pair(stats, "shots_on_target", losing)
     if None in (ts_losing, ts_winning, sot_losing, sot_winning):
         return None

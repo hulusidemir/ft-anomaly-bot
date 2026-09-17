@@ -1,8 +1,14 @@
 """Telegram message formatting and delivery."""
 
 import logging
+import time
 import aiohttp
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS
+from db import (
+    create_notification_delivery,
+    mark_notification_sent,
+    record_notification_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +18,7 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 async def send_telegram(
     text: str, parse_mode: str = "HTML",
     _allow_chunked: bool = True, reply_to_message_id: int | None = None,
+    *, anomaly_id: int | None = None,
 ) -> int | None:
     """Send a message to all configured Telegram chats. Returns message_id from primary chat."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS:
@@ -20,12 +27,37 @@ async def send_telegram(
 
     primary_msg_id = None
     for idx, chat_id in enumerate(TELEGRAM_CHAT_IDS):
+        delivery = None
+        if anomaly_id is not None:
+            delivery, _ = await create_notification_delivery(
+                anomaly_id, str(chat_id), text,
+            )
+            if delivery.get("state") == "SENT":
+                continue
+
         # A reply message id only belongs to the chat where it was created.
         # For secondary chats we send the same content without reply threading.
         chat_reply_id = reply_to_message_id if idx == 0 else None
-        msg_id = await _send_to_chat(
-            chat_id, text, parse_mode, _allow_chunked, chat_reply_id,
-        )
+        try:
+            msg_id = await _send_to_chat(
+                chat_id, text, parse_mode, _allow_chunked, chat_reply_id,
+            )
+        except Exception as exc:
+            msg_id = None
+            error = str(exc) or exc.__class__.__name__
+        else:
+            error = "Telegram send returned no message id" if msg_id is None else None
+
+        if delivery is not None:
+            if msg_id is not None:
+                await mark_notification_sent(delivery["id"], telegram_message_id=msg_id)
+            else:
+                attempt = int(delivery.get("attempt_count") or 0) + 1
+                delay_seconds = min(30 * 60, 2 ** (attempt - 1) * 60)
+                await record_notification_failure(
+                    delivery["id"], error or "Telegram send failed",
+                    next_retry_at=time.time() + delay_seconds,
+                )
         if primary_msg_id is None:
             primary_msg_id = msg_id
     return primary_msg_id
